@@ -286,7 +286,8 @@
 
     <div class="row" style="justify-content:center">
       <label class="btn quiet" for="fileIn" style="cursor:pointer">העלאת קובץ הקלטה</label>
-      <input type="file" id="fileIn" accept="audio/*,.ogg,.opus,.m4a,.mp3,.wav,.webm,.aac,.flac" hidden>
+      <!-- בלי audio/* : באנדרואיד הוא פותח את הרשמקול להקלטה חדשה במקום בורר קבצים -->
+      <input type="file" id="fileIn" accept=".m4a,.mp3,.ogg,.opus,.wav,.webm,.aac,.flac,.3gp,.amr" hidden>
     </div>
     <p class="hint" style="margin:6px auto 0">הקלטה מהטלפון, הודעה קולית מוואטסאפ או קובץ מהמחשב, עד 14MB.</p>
 
@@ -475,6 +476,7 @@
     if (!mime && blob.name) { // קבצים בלי סוג (קורה ב-.opus של וואטסאפ) – לפי הסיומת
       const ext = blob.name.split('.').pop().toLowerCase();
       mime = { ogg: 'audio/ogg', opus: 'audio/ogg', m4a: 'audio/m4a', mp3: 'audio/mp3', wav: 'audio/wav', webm: 'audio/webm', aac: 'audio/aac', flac: 'audio/flac' }[ext];
+      // ‎.3gp / .amr לא נתמכים ב-Gemini – יומרו ל-WAV למטה
     }
     if (mime) return { blob, mime };
     return { blob: await toWav(blob), mime: 'audio/wav' };
