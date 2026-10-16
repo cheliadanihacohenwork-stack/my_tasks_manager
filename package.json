@@ -1,0 +1,10 @@
+{
+  "name": "voice-tasks",
+  "private": true,
+  "description": "משימות בקול – דף ב-GitHub Pages ושרת ב-Google Apps Script",
+  "scripts": {
+    "deploy": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/deploy.ps1",
+    "deploy:server": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/deploy.ps1 -ServerOnly",
+    "deploy:web": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/deploy.ps1 -WebOnly"
+  }
+}

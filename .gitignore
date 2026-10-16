@@ -1,0 +1,9 @@
+# המאגר ציבורי – לא להעלות סודות או הגדרות מקומיות
+deploy.config.json
+.clasprc.json
+.env
+*.local.*
+
+node_modules/
+.DS_Store
+Thumbs.db
