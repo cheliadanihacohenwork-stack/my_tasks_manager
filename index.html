@@ -281,9 +281,14 @@
     </div>
 
     <div id="fileBox" class="msg" hidden>
-      <p style="margin:0 0 8px">הדפדפן לא מאפשר גישה למיקרופון מהדף הזה. אפשר להקליט בטלפון ולבחור את קובץ ההקלטה:</p>
-      <input type="file" id="fileIn" accept="audio/*" capture>
+      <p style="margin:0">הדפדפן לא מאפשר גישה למיקרופון מהדף הזה. אפשר להקליט באפליקציית ההקלטות של הטלפון, ולהעלות את הקובץ בכפתור למטה.</p>
     </div>
+
+    <div class="row" style="justify-content:center">
+      <label class="btn quiet" for="fileIn" style="cursor:pointer">העלאת קובץ הקלטה</label>
+      <input type="file" id="fileIn" accept="audio/*,.ogg,.opus,.m4a,.mp3,.wav,.webm,.aac,.flac" hidden>
+    </div>
+    <p class="hint" style="margin:6px auto 0">הקלטה מהטלפון, הודעה קולית מוואטסאפ או קובץ מהמחשב, עד 14MB.</p>
 
     <div class="alt">
       <label class="f" for="textIn">או להקליד</label>
@@ -441,8 +446,14 @@
 
   $('fileIn').onchange = e => {
     const f = e.target.files[0];
-    if (f) handleAudio(f, 0);
     e.target.value = '';
+    if (!f) return;
+    // Gemini מקבל עד 20MB לבקשה, ו-base64 מוסיף כשליש
+    if (f.size > 14 * 1024 * 1024) {
+      err('הקובץ גדול מדי (' + (f.size / 1048576).toFixed(1) + 'MB). אפשר לחלק את ההקלטה, או להקליט ישירות באפליקציה – עד 15 דקות.');
+      return;
+    }
+    handleAudio(f, f.size > 2 * 1024 * 1024 ? 10 * 60000 : 0); // לקובץ גדול מציגים את הודעת "הקלטה ארוכה"
   };
 
   // פורמטים ש-Gemini מקבל ישירות. כרום באנדרואיד מקליט WebM/Opus – נשלח כמו שהוא, בלי המרה
@@ -460,7 +471,11 @@
     catch (e) { return new MediaRecorder(s); }
   }
   async function prepareAudio(blob) {
-    const mime = GEMINI_AUDIO[(blob.type || '').split(';')[0].toLowerCase()];
+    let mime = GEMINI_AUDIO[(blob.type || '').split(';')[0].toLowerCase()];
+    if (!mime && blob.name) { // קבצים בלי סוג (קורה ב-.opus של וואטסאפ) – לפי הסיומת
+      const ext = blob.name.split('.').pop().toLowerCase();
+      mime = { ogg: 'audio/ogg', opus: 'audio/ogg', m4a: 'audio/m4a', mp3: 'audio/mp3', wav: 'audio/wav', webm: 'audio/webm', aac: 'audio/aac', flac: 'audio/flac' }[ext];
+    }
     if (mime) return { blob, mime };
     return { blob: await toWav(blob), mime: 'audio/wav' };
   }
