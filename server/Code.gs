@@ -36,7 +36,12 @@ function doPost(e) {
     const token = PropertiesService.getScriptProperties().getProperty('APP_TOKEN');
     if (!token) throw apiErr_('SETUP', 'חסר APP_TOKEN ב-Script Properties.');
     if (req.token !== token) throw apiErr_('TOKEN', 'קוד הגישה שגוי.');
-    const actions = { processAudio: processAudio, processText: processText, chatTurn: chatTurn, sendTasks: sendTasks, ping: function () { return 'ok'; } };
+    const actions = {
+      processAudio: processAudio, processText: processText, chatTurn: chatTurn,
+      createTasks: createTasks, listTasks: listTasks, listAreas: listAreas, saveAreas: saveAreas,
+      sendTasks: sendTasks, // ישן – נשאר זמין לדפים שעוד לא התעדכנו
+      ping: function () { return 'ok'; }
+    };
     const fn = actions[req.action];
     if (!fn) throw apiErr_('ACTION', 'פעולה לא מוכרת.');
     out = { ok: true, result: fn.apply(null, req.args || []) };
@@ -229,7 +234,163 @@ function clean_(t) {
   };
 }
 
-/** שולח מייל אחד לכל משימה. Power Automate הופך אותו למשימה ב-To Do */
+/* ================= גיליון: משימות ותחומים ================= */
+
+const SHEETS = {
+  tasks: ['id', 'title', 'notes', 'area', 'dueDate', 'importance', 'status', 'createdAt', 'updatedAt', 'completedAt', 'source'],
+  areas: ['name', 'color', 'order'],
+  whatsapp: ['id', 'name', 'phone', 'message', 'sendAt', 'status', 'calendarEventId', 'createdAt']
+};
+const DEFAULT_AREAS = [
+  { name: 'החלפת רכזת מרחב חדרה–אור עקיבא', color: '#2E6B5E' },
+  { name: 'ריכוז מבוא לתכנות', color: '#3D5A99' },
+  { name: 'סדר וארגון מסמכים', color: '#A0672B' },
+  { name: 'שיחות והודעות', color: '#8A4A7A' }
+];
+const AREA_PALETTE = ['#2E6B5E', '#3D5A99', '#A0672B', '#8A4A7A', '#5C7A2E', '#B04A4A', '#4A7F99', '#6B5E2E'];
+
+/** להרצה ידנית פעם אחת מהעורך: יוצרת את הגיליון ומאשרת את ההרשאות */
+function setup() {
+  const ss = withLock_(db_);
+  Logger.log('הגיליון מוכן: ' + ss.getUrl());
+  return ss.getUrl();
+}
+
+function withLock_(fn) {
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(20000)) throw apiErr_('BUSY', 'השרת עסוק כרגע. נסי שוב בעוד כמה שניות.');
+  try { return fn(); } finally { lock.releaseLock(); }
+}
+
+/** מחזירה את קובץ הנתונים, ויוצרת אותו בהרצה הראשונה. לקרוא רק מתוך withLock_ */
+function db_() {
+  const props = PropertiesService.getScriptProperties();
+  const id = props.getProperty('SHEET_ID');
+  if (id) return SpreadsheetApp.openById(id);
+
+  const ss = SpreadsheetApp.create('משימות בקול – נתונים');
+  Object.keys(SHEETS).forEach(function (name, i) {
+    const sh = i === 0 ? ss.getSheets()[0].setName(name) : ss.insertSheet(name);
+    const head = SHEETS[name];
+    sh.getRange(1, 1, sh.getMaxRows(), head.length).setNumberFormat('@'); // הכול טקסט, בלי המרת תאריכים
+    sh.getRange(1, 1, 1, head.length).setValues([head]).setFontWeight('bold');
+    sh.setFrozenRows(1);
+    sh.setRightToLeft(true);
+  });
+  appendRows_(ss.getSheetByName('areas'), DEFAULT_AREAS.map(function (a, i) { return [a.name, a.color, String(i + 1)]; }));
+  props.setProperty('SHEET_ID', ss.getId());
+  return ss;
+}
+
+function sheet_(name) {
+  const sh = db_().getSheetByName(name);
+  if (!sh) throw new Error('בקובץ הנתונים חסר הגיליון "' + name + '".');
+  return sh;
+}
+
+function readTable_(sh) {
+  const values = sh.getDataRange().getDisplayValues();
+  const head = values.shift() || [];
+  return values.filter(function (r) { return r[0]; }).map(function (r) {
+    const o = {};
+    head.forEach(function (h, i) { o[h] = r[i]; });
+    return o;
+  });
+}
+
+function appendRows_(sh, rows) {
+  if (!rows.length) return;
+  const range = sh.getRange(sh.getLastRow() + 1, 1, rows.length, rows[0].length);
+  range.setNumberFormat('@');
+  range.setValues(rows);
+}
+
+function newId_() {
+  return 't_' + Utilities.getUuid().replace(/-/g, '').slice(0, 8);
+}
+
+/** ההערות שנשלחות ל-To Do: הטקסט, ואחריו שורות התחום והמזהה (כך Power Automate ימצא את המשימה) */
+function notesWithMeta_(notes, area, id) {
+  const lines = [];
+  if (area) lines.push('תחום: ' + area);
+  lines.push('מזהה: ' + id);
+  return (notes ? notes + '\n\n' : '') + lines.join('\n');
+}
+
+function listTasks() {
+  return withLock_(function () {
+    return readTable_(sheet_('tasks')).filter(function (t) { return t.status !== 'deleted'; });
+  });
+}
+
+function listAreas() {
+  return withLock_(function () {
+    return readTable_(sheet_('areas'))
+      .map(function (a) { return { name: a.name, color: a.color, order: Number(a.order) || 0 }; })
+      .sort(function (a, b) { return a.order - b.order; });
+  });
+}
+
+/** מחליפה את כל רשימת התחומים. areas = [{name, color}] לפי הסדר */
+function saveAreas(areas) {
+  const seen = {};
+  const rows = [];
+  (areas || []).forEach(function (a) {
+    const name = String((a && a.name) || '').trim().slice(0, 60);
+    if (!name || seen[name]) return;
+    seen[name] = true;
+    const color = /^#[0-9a-f]{6}$/i.test(a.color) ? a.color : AREA_PALETTE[rows.length % AREA_PALETTE.length];
+    rows.push([name, color, String(rows.length + 1)]);
+  });
+  withLock_(function () {
+    const sh = sheet_('areas');
+    if (sh.getLastRow() > 1) sh.getRange(2, 1, sh.getLastRow() - 1, 3).clearContent();
+    appendRows_(sh, rows);
+  });
+  return listAreas();
+}
+
+/**
+ * שומרת משימות בגיליון ושולחת מייל יצירה לכל אחת (באותו פורמט שהזרימה הקיימת מכירה).
+ * מחזירה {created, failed, error}: אם המכסה נגמרה באמצע, מה שנשלח נשמר ומה שלא – חוזר לדף.
+ */
+function createTasks(tasks, source) {
+  const settings = getSettings_();
+  const src = ['quick', 'chat', 'manual'].indexOf(source) >= 0 ? source : 'manual';
+  const now = new Date().toISOString();
+  const created = [], failed = [], rows = [];
+  let error = '';
+
+  (tasks || []).forEach(function (raw) {
+    const t = clean_(raw);
+    if (!t.title) return;
+    t.area = String((raw && raw.area) || '').trim().slice(0, 60);
+    if (error) { failed.push(t); return; }
+    t.id = newId_();
+    try {
+      MailApp.sendEmail({
+        to: settings.to,
+        subject: '[משימה] ' + t.title,
+        body: JSON.stringify({ title: t.title, notes: notesWithMeta_(t.notes, t.area, t.id), dueDate: t.dueDate, importance: t.importance })
+      });
+    } catch (e) {
+      error = /limit|quota|too many/i.test(String(e.message))
+        ? 'נגמרה מכסת המיילים היומית של Gmail. אפשר לנסות שוב מחר.'
+        : 'שליחת המייל נכשלה: ' + e.message;
+      delete t.id;
+      failed.push(t);
+      return;
+    }
+    t.status = 'open'; t.createdAt = now; t.updatedAt = now; t.completedAt = ''; t.source = src;
+    rows.push(SHEETS.tasks.map(function (k) { return t[k] || ''; }));
+    created.push(t);
+  });
+
+  if (rows.length) withLock_(function () { appendRows_(sheet_('tasks'), rows); });
+  return { created: created, failed: failed, error: error };
+}
+
+/** ישן: שולח מייל אחד לכל משימה, בלי שמירה. נשאר זמין עד שכל הדפים יעברו ל-createTasks */
 function sendTasks(tasks) {
   const settings = getSettings_();
   let count = 0;

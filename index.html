@@ -61,9 +61,26 @@
   :focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
 
   .task {
-    background: var(--surface); border: 1px solid var(--line); border-radius: 12px;
-    padding: 14px; margin-bottom: 12px; display: grid; gap: 10px;
+    background: var(--surface); border: 1px solid var(--line); border-inline-start: 5px solid var(--line);
+    border-radius: 12px; padding: 14px; margin-bottom: 12px; display: grid; gap: 10px;
   }
+  select {
+    font: inherit; color: var(--ink); background: var(--surface);
+    border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; max-width: 100%;
+  }
+  .area-pick { display: flex; gap: 8px; align-items: center; color: var(--muted); font-size: .95rem; }
+  .area-pick select { flex: 1; min-width: 0; }
+
+  .area-row { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; }
+  .area-row input[type=text] { flex: 1; min-width: 0; }
+  .area-row input[type=color] {
+    width: 44px; height: 44px; padding: 2px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface);
+  }
+  .icon-btn {
+    font: inherit; width: 40px; height: 40px; border: 1px solid var(--line); border-radius: 8px;
+    background: transparent; color: var(--ink); cursor: pointer; flex: none;
+  }
+  .icon-btn:disabled { opacity: .35; cursor: default; }
   .task .t { font-weight: 600; }
   .meta { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; }
   .meta input[type=date] { width: auto; }
@@ -173,8 +190,25 @@
     <button class="btn" id="newBtn" type="button">משימה חדשה</button>
   </section>
 
+  <!-- ניהול תחומים -->
+  <section id="vAreas" hidden>
+    <h2 style="font-size:1.2rem;margin:0 0 6px">התחומים שלי</h2>
+    <p class="hint" style="text-align:start;margin-bottom:16px">שינוי שם של תחום לא משנה משימות שכבר נשמרו.</p>
+    <div id="areaList"></div>
+    <div class="row">
+      <button class="btn quiet" id="areaAdd" type="button">הוספת תחום</button>
+    </div>
+    <div class="row">
+      <button class="btn" id="areaSave" type="button">שמירה</button>
+      <button class="btn quiet" id="areaCancel" type="button">ביטול</button>
+    </div>
+  </section>
+
   <div id="err" class="msg err" role="alert" hidden></div>
-  <p style="margin-top:32px"><button class="remove" id="openSetup" type="button">הגדרות חיבור</button></p>
+  <p style="margin-top:32px;display:flex;gap:18px">
+    <button class="remove" id="openAreas" type="button" style="margin:0">ניהול תחומים</button>
+    <button class="remove" id="openSetup" type="button" style="margin:0">הגדרות חיבור</button>
+  </p>
 </main>
 
 <script>
@@ -185,7 +219,7 @@
   let mode = 'quick';
 
   function show(view) {
-    ['vSetup', 'vRecord', 'vChat', 'vBusy', 'vReview', 'vDone'].forEach(v => $(v).hidden = (v !== view));
+    ['vSetup', 'vRecord', 'vChat', 'vBusy', 'vReview', 'vDone', 'vAreas'].forEach(v => $(v).hidden = (v !== view));
     $('tabs').hidden = !(view === 'vRecord' || view === 'vChat');
   }
   function home() { err(''); show(mode === 'chat' ? 'vChat' : 'vRecord'); }
@@ -278,6 +312,7 @@
       d.innerHTML =
         '<input type="text" class="t" aria-label="כותרת המשימה">' +
         '<textarea class="n" aria-label="פרטים" placeholder="פרטים (לא חובה)"></textarea>' +
+        '<label class="area-pick">תחום <select class="a"></select></label>' +
         '<div class="meta">' +
           '<label>תאריך יעד <input type="date" class="d"></label>' +
           '<label><input type="checkbox" class="u"> דחוף</label>' +
@@ -288,6 +323,9 @@
       q('.n').value = t.notes || '';
       q('.d').value = t.dueDate || '';
       q('.u').checked = t.importance === 'high';
+      fillAreaSelect(q('.a'), t.area || '');
+      paintArea(d, t.area);
+      q('.a').onchange = e => { t.area = e.target.value; paintArea(d, t.area); };
       q('.t').oninput = e => { t.title = e.target.value; };
       q('.n').oninput = e => { t.notes = e.target.value; };
       q('.d').onchange = e => { t.dueDate = e.target.value; };
@@ -303,20 +341,46 @@
       : 'שליחת ' + current.length + ' משימות ל-Outlook';
   }
 
+  function fillAreaSelect(sel, value) {
+    const names = areas.map(a => a.name);
+    if (value && !names.includes(value)) names.push(value); // תחום שנמחק מהרשימה עדיין מוצג
+    sel.innerHTML = '';
+    [''].concat(names).forEach(n => {
+      const o = document.createElement('option');
+      o.value = n;
+      o.textContent = n || 'ללא תחום';
+      sel.appendChild(o);
+    });
+    sel.value = value;
+  }
+  function areaColor(name) {
+    const a = areas.find(x => x.name === name);
+    return a ? a.color : '';
+  }
+  function paintArea(el, name) { el.style.borderInlineStartColor = areaColor(name) || ''; }
+
   $('sendBtn').onclick = () => {
     if (current.some(t => !t.title.trim())) { err('לכל משימה צריכה להיות כותרת.'); return; }
     err('');
     $('sendBtn').disabled = true;
     run()
-      .withSuccessHandler(n => {
+      .withSuccessHandler(r => {
         $('sendBtn').disabled = false;
+        const n = r.created.length;
+        if (r.failed.length) {
+          current = r.failed;
+          renderTasks();
+          err((n ? 'נשמרו ונשלחו ' + n + ' משימות. ' : '') +
+            'המשימות שנשארו כאן לא נשלחו: ' + r.error);
+          return;
+        }
         $('doneText').textContent = n === 1
-          ? 'המשימה נשלחה. היא תופיע ב-Outlook וב-To Do תוך דקה או שתיים.'
-          : n + ' משימות נשלחו. הן יופיעו ב-Outlook וב-To Do תוך דקה או שתיים.';
+          ? 'המשימה נשמרה ונשלחה. היא תופיע ב-Outlook וב-To Do תוך דקה או שתיים.'
+          : n + ' משימות נשמרו ונשלחו. הן יופיעו ב-Outlook וב-To Do תוך דקה או שתיים.';
         show('vDone');
       })
       .withFailureHandler(e => { $('sendBtn').disabled = false; err((e && e.message) || String(e)); })
-      .sendTasks(current);
+      .createTasks(current, mode === 'chat' ? 'chat' : 'quick');
   };
 
   function reset() { current = []; $('textIn').value = ''; home(); }
@@ -525,6 +589,7 @@
       await callApi('ping', []);
       setCfg(memCfg);
       home();
+      loadAreas();
     } catch (e) {
       memCfg = prev;
       err(e.message);
@@ -540,8 +605,80 @@
     show('vSetup');
   };
 
+  // ---------- תחומים ----------
+  const AREAS_KEY = 'voiceTasksAreas';
+  const PALETTE = ['#2E6B5E', '#3D5A99', '#A0672B', '#8A4A7A', '#5C7A2E', '#B04A4A', '#4A7F99', '#6B5E2E'];
+  let areas = [];
+  try { areas = JSON.parse(localStorage.getItem(AREAS_KEY) || '[]'); } catch (e) { areas = []; }
+
+  function setAreas(list) {
+    areas = list || [];
+    try { localStorage.setItem(AREAS_KEY, JSON.stringify(areas)); } catch (e) { /* רק במטמון בזיכרון */ }
+  }
+  // טוען פעם אחת ברקע. אם נכשל, ממשיכים עם הרשימה השמורה במכשיר
+  function loadAreas() {
+    callApi('listAreas', []).then(list => {
+      setAreas(list);
+      if (!$('vReview').hidden) renderTasks();
+    }, () => {});
+  }
+
+  let areaDraft = [];
+  function renderAreaEditor() {
+    const box = $('areaList');
+    box.innerHTML = '';
+    areaDraft.forEach((a, i) => {
+      const row = document.createElement('div');
+      row.className = 'area-row';
+      row.innerHTML =
+        '<input type="color" aria-label="צבע">' +
+        '<input type="text" aria-label="שם התחום" placeholder="שם התחום">' +
+        '<button type="button" class="icon-btn up" aria-label="הזזה למעלה">↑</button>' +
+        '<button type="button" class="icon-btn del" aria-label="מחיקה">✕</button>';
+      const [color, name] = row.querySelectorAll('input');
+      color.value = a.color;
+      name.value = a.name;
+      color.oninput = e => { a.color = e.target.value; };
+      name.oninput = e => { a.name = e.target.value; };
+      const up = row.querySelector('.up');
+      up.disabled = i === 0;
+      up.onclick = () => { areaDraft.splice(i - 1, 0, areaDraft.splice(i, 1)[0]); renderAreaEditor(); };
+      row.querySelector('.del').onclick = () => { areaDraft.splice(i, 1); renderAreaEditor(); };
+      box.appendChild(row);
+    });
+  }
+  $('openAreas').onclick = () => {
+    err('');
+    areaDraft = areas.map(a => ({ name: a.name, color: a.color }));
+    renderAreaEditor();
+    show('vAreas');
+    loadAreas();
+  };
+  $('areaAdd').onclick = () => {
+    areaDraft.push({ name: '', color: PALETTE[areaDraft.length % PALETTE.length] });
+    renderAreaEditor();
+    const inputs = $('areaList').querySelectorAll('input[type=text]');
+    inputs[inputs.length - 1].focus();
+  };
+  $('areaCancel').onclick = home;
+  $('areaSave').onclick = async () => {
+    const list = areaDraft.map(a => ({ name: a.name.trim(), color: a.color })).filter(a => a.name);
+    const names = list.map(a => a.name);
+    if (new Set(names).size !== names.length) { err('יש שני תחומים עם אותו שם. שני את אחד מהם.'); return; }
+    err('');
+    $('areaSave').disabled = true;
+    try {
+      setAreas(await callApi('saveAreas', [list]));
+      home();
+    } catch (e) {
+      err(e.message);
+    } finally {
+      $('areaSave').disabled = false;
+    }
+  };
+
   // ---------- הפעלה ----------
-  if (memCfg && memCfg.url) show('vRecord'); else show('vSetup');
+  if (memCfg && memCfg.url) { show('vRecord'); loadAreas(); } else show('vSetup');
 </script>
 </body>
 </html>

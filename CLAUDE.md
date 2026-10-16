@@ -57,7 +57,7 @@
 
 ### גיליונות
 - **tasks:** `id, title, notes, area, dueDate (YYYY-MM-DD או ריק), importance (normal/high), status (open/done/deleted), createdAt, updatedAt, completedAt, source (quick/chat/manual)`
-- **areas:** `name, color, order`. רשימת התחומים שלי, ניתנת לעריכה מהאפליקציה. אפשר להתחיל, למשל, מ"הדרכה", "תקשוב באולפנה", "מנהלה", "אישי". שאל אותי לפני שאתה קובע אותם.
+- **areas:** `name, color, order`. רשימת התחומים שלי, ניתנת לעריכה מהאפליקציה ("ניהול תחומים"). התחומים ההתחלתיים: "החלפת רכזת מרחב חדרה–אור עקיבא", "ריכוז מבוא לתכנות", "סדר וארגון מסמכים", "שיחות והודעות" (להתקשר או לשלוח הודעה למישהו). משימה יכולה להיות גם "ללא תחום".
 - **whatsapp:** `id, name, phone, message, sendAt, status (scheduled/done/cancelled), calendarEventId, createdAt`
 - **outbox** (אופציונלי, לשלב 4): עדכונים שממתינים לשליחה במייל מאוחד.
 
