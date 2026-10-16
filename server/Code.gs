@@ -19,10 +19,45 @@ const TASK_SCHEMA = {
     title: { type: 'STRING' },
     notes: { type: 'STRING' },
     dueDate: { type: 'STRING' },
-    importance: { type: 'STRING', enum: ['normal', 'high'] }
+    importance: { type: 'STRING', enum: ['normal', 'high'] },
+    area: { type: 'STRING' },          // שם תחום מהרשימה, תחום חדש מוצע, או ריק
+    duplicateOf: { type: 'STRING' }    // כותרת של משימה פתוחה קיימת שדומה לזו, או ריק
   },
-  required: ['title', 'notes', 'dueDate', 'importance']
+  required: ['title', 'notes', 'dueDate', 'importance', 'area', 'duplicateOf']
 };
+
+/** משימה מ-Gemini: השדות הרגילים, ובנוסף תחום וכפילות */
+function cleanAI_(t) {
+  const c = clean_(t);
+  c.area = String((t && t.area) || '').trim().slice(0, 60);
+  c.duplicateOf = String((t && t.duplicateOf) || '').trim().slice(0, 200);
+  return c;
+}
+
+/** מה העוזר צריך לדעת: התחומים והמשימות הפתוחות (לשיוך ולזיהוי כפילויות) */
+function aiContext_() {
+  let areas = [], open = [];
+  try {
+    areas = listAreas().map(function (a) { return a.name; });
+    open = listTasks().filter(function (t) { return t.status === 'open'; })
+      .sort(function (a, b) { return (a.dueDate || '9999').localeCompare(b.dueDate || '9999'); })
+      .slice(0, 150);
+  } catch (e) {
+    console.warn('אין גישה לגיליון בשביל ההקשר: ' + e.message); // ממשיכים בלי הקשר
+  }
+  return [
+    'התחומים שלי: ' + (areas.length ? areas.map(function (n) { return '"' + n + '"'; }).join(', ') : '(אין עדיין)') + '.',
+    'שיוך לתחום (area): בחר את שם התחום **בדיוק כפי שהוא כתוב ברשימה**. ' +
+      'משימה של להתקשר למישהו או לשלוח לו הודעה שייכת ל"שיחות והודעות" אם התחום קיים. ' +
+      'הצע תחום חדש רק אם המשימה בבירור לא מתאימה לאף תחום קיים. אם לא ברור – השאר ריק.',
+    open.length
+      ? 'המשימות הפתוחות שכבר יש לי:\n' + open.map(function (t) {
+        return '- ' + t.title + (t.area ? ' [' + t.area + ']' : '') + (t.dueDate ? ' (יעד ' + t.dueDate + ')' : '');
+      }).join('\n')
+      : 'אין לי כרגע משימות פתוחות.',
+    'כפילות (duplicateOf): אם משימה חדשה דומה מאוד למשימה פתוחה קיימת, כתוב את הכותרת של הקיימת בדיוק. אחרת השאר ריק.'
+  ].join('\n');
+}
 
 function doGet() {
   return ContentService.createTextOutput('משימות בקול – השרת פועל.');
@@ -95,14 +130,18 @@ function processText(text) {
 function quickPrompt_(isAudio) {
   return [
     isAudio
-      ? 'מצורפת הקלטה קולית בעברית שבה אני מכתיבה משימות לעבודה. תמלל אותה במדויק לשדה transcript.'
+      ? 'מצורפת הקלטה קולית בעברית שבה אני מכתיבה משימות לעבודה. ייתכן שהיא ארוכה ומבולגנת. תמלל אותה במדויק לשדה transcript.'
       : 'להלן טקסט שבו כתבתי משימות לעבודה.',
-    'חלץ את כל המשימות. ייתכן שיש משימה אחת או כמה.',
+    'חלץ את כל המשימות. ייתכן שיש משימה אחת או הרבה, מעורבבות.',
+    'משימה גדולה שכוללת כמה פעולות שונות – פרק לכמה משימות נפרדות וקונקרטיות.',
     'לכל משימה:',
     '- title: כותרת קצרה וברורה, עד 10 מילים, שמתחילה בפועל (למשל "להתקשר לרונית בנוגע לשיבוץ").',
     '- notes: פרטים נוספים שנאמרו, או מחרוזת ריקה.',
     '- dueDate: תאריך יעד בפורמט YYYY-MM-DD אם נאמר מועד, אחרת מחרוזת ריקה.',
     '- importance: "high" אם נאמר שהמשימה דחופה או חשובה, אחרת "normal".',
+    '- area ו-duplicateOf לפי ההנחיות למטה.',
+    'unclear: רשימה קצרה של דברים שלא ברורים ושכדאי לשאול עליהם (משימה מעורפלת, למי הכוונה, מה המועד כשנאמר "בקרוב"). אם הכול ברור – רשימה ריקה.',
+    aiContext_(),
     dateContext_(),
     'אל תמציא משימות או מועדים שלא נאמרו.'
   ].join('\n');
@@ -115,14 +154,19 @@ function extractTasks_(parts) {
       responseMimeType: 'application/json',
       responseSchema: {
         type: 'OBJECT',
-        properties: { transcript: { type: 'STRING' }, tasks: { type: 'ARRAY', items: TASK_SCHEMA } },
-        required: ['transcript', 'tasks']
+        properties: {
+          transcript: { type: 'STRING' },
+          tasks: { type: 'ARRAY', items: TASK_SCHEMA },
+          unclear: { type: 'ARRAY', items: { type: 'STRING' } }
+        },
+        required: ['transcript', 'tasks', 'unclear']
       }
     }
   }, 'minimal');
   return {
     transcript: out.transcript || '',
-    tasks: (out.tasks || []).map(clean_).filter(function (t) { return t.title; })
+    tasks: (out.tasks || []).map(cleanAI_).filter(function (t) { return t.title; }),
+    unclear: (out.unclear || []).map(String).filter(Boolean).slice(0, 10)
   };
 }
 
@@ -131,19 +175,25 @@ function extractTasks_(parts) {
 function chatSystem_() {
   return [
     'אתה עוזר אישי לניהול משימות בעבודה. המשתמשת כותבת או מקליטה בעברית מה עובר לה בראש, לפעמים בצורה לא מסודרת.',
+    'לפעמים זו הקלטה ארוכה של כמה דקות, עם הרבה משימות מעורבבות.',
     'התפקיד שלך:',
-    '- לעזור לה להבין מה בדיוק צריך לעשות, ולפרק דברים גדולים או מעורפלים למשימות קונקרטיות ונפרדות.',
+    '- לעזור לה להבין מה בדיוק צריך לעשות, ולפרק דברים גדולים או מעורפלים למשימות קונקרטיות ונפרדות (כל צעד – משימה משלו).',
+    '- לשייך כל משימה לתחום, ולארגן לפי זמן: היום, השבוע, אחר כך, בלי תאריך.',
     '- כשחסר מידע חשוב, לשאול: מה תאריך היעד, כמה זה דחוף, האם זה תלוי במישהו אחר, מה הצעד הראשון.',
-    '- לשאול שאלה אחת או שתיים בכל פעם, בקצרה ובבהירות. לא להרצות ולא לתת עצות שלא ביקשה.',
+    '- לשאול שאלה אחת או שתיים בכל פעם, בקצרה ובבהירות. להתחיל ממה שהכי חשוב או הכי קרוב בזמן. לא להרצות ולא לתת עצות שלא ביקשה.',
+    '- אם משימה דומה למשימה שכבר יש לה, לומר זאת בקצרה ("זה דומה למשימה שכבר יש לך: ...") ולשאול אם להוסיף בכל זאת.',
+    '- אחרי הקלטה ארוכה, לפתוח בסיכום קצר מאוד: כמה משימות זיהית ובאילו תחומים, ואז את השאלה הראשונה.',
     '- אם היא מתלבטת או מרגישה עומס, לעזור לה לסדר עדיפויות בשאלות פשוטות.',
-    '- לענות בעברית, בפנייה בלשון נקבה, בטון חם וענייני ובמשפטים קצרים.',
+    '- לענות בעברית, בפנייה בלשון נקבה, בטון חם וענייני ובמשפטים קצרים, בלי הטפות.',
     'בכל תשובה מלא את השדות:',
     '- userText: אם ההודעה האחרונה שלה הייתה הקלטה, התמלול המדויק שלה. אם הייתה טקסט, החזר אותו כמו שהוא.',
-    '- reply: מה שאתה עונה לה.',
+    '- reply: מה שאתה עונה לה. אל תעתיק לתוכו את כל רשימת המשימות – היא מוצגת לה בנפרד.',
     '- tasks: הרשימה המלאה והעדכנית של כל המשימות שגובשו עד עכשיו בשיחה, לא רק החדשות. ' +
-      'title קצר שמתחיל בפועל; notes עם פרטים; dueDate בפורמט YYYY-MM-DD או ריק; importance "high" או "normal".',
-    '- done: true רק כשכל המשימות ברורות ואין לך עוד שאלות. אז אמור לה בקצרה שהרשימה מוכנה לשליחה.',
+      'title קצר שמתחיל בפועל; notes עם פרטים; dueDate בפורמט YYYY-MM-DD או ריק; importance "high" או "normal"; area; duplicateOf. ' +
+      'משימה שהיא ביקשה לא להוסיף – הסר מהרשימה.',
+    '- done: true רק כשכל המשימות ברורות ואין לך עוד שאלות. אז אמור לה בקצרה שהרשימה מוכנה לשמירה.',
     'אל תמציא מועדים או פרטים שלא נאמרו. אם אמרה שאין תאריך יעד, השאר ריק ואל תשאל שוב.',
+    aiContext_(),
     dateContext_()
   ].join('\n');
 }
@@ -180,7 +230,7 @@ function chatTurn(history, text, audioB64, mimeType) {
   return {
     userText: out.userText || text || '',
     reply: out.reply || '',
-    tasks: (out.tasks || []).map(clean_).filter(function (t) { return t.title; }),
+    tasks: (out.tasks || []).map(cleanAI_).filter(function (t) { return t.title; }),
     done: !!out.done
   };
 }
@@ -433,8 +483,25 @@ function createTasks(tasks, source) {
     created.push(t);
   });
 
-  if (rows.length) withLock_(function () { appendRows_(sheet_('tasks'), rows); });
-  return { created: created, failed: failed, error: error };
+  let areasOut = null;
+  if (rows.length) withLock_(function () {
+    appendRows_(sheet_('tasks'), rows);
+    // תחום חדש שהעוזר הציע ונשאר במשימה שנשמרה – מתווסף לרשימת התחומים
+    const sh = sheet_('areas');
+    const known = readTable_(sh).map(function (a) { return a.name; });
+    const fresh = [];
+    created.forEach(function (t) {
+      if (t.area && known.indexOf(t.area) < 0 && fresh.indexOf(t.area) < 0) fresh.push(t.area);
+    });
+    if (fresh.length) {
+      appendRows_(sh, fresh.map(function (name, i) {
+        const n = known.length + i;
+        return [name, AREA_PALETTE[n % AREA_PALETTE.length], String(n + 1)];
+      }));
+      areasOut = true;
+    }
+  });
+  return { created: created, failed: failed, error: error, areas: areasOut ? listAreas() : null };
 }
 
 /* ================= שינוי משימות קיימות ================= */

@@ -42,6 +42,16 @@
   @keyframes pulse { 0%,100% { box-shadow: 0 0 0 10px var(--soft); } 50% { box-shadow: 0 0 0 22px var(--soft); } }
   @media (prefers-reduced-motion: reduce) { #recBtn.recording { animation: none; } }
   #timer { font-variant-numeric: tabular-nums; color: var(--muted); min-height: 1.5em; }
+  .dup { margin: 0; font-size: .9rem; color: var(--ink); background: var(--soft); border-radius: 8px; padding: 6px 10px; }
+  .draft-list { margin: 0 0 12px; }
+  .draft-list h3 { display: flex; align-items: center; gap: 8px; font-size: .95rem; margin: 10px 0 4px; color: var(--muted); }
+  .draft-list ul { list-style: none; margin: 0; padding: 0; }
+  .draft-list li { padding: 6px 0; border-bottom: 1px solid var(--line); display: flex; gap: 8px; flex-wrap: wrap; }
+  .draft-list li .when { color: var(--muted); font-size: .88rem; margin-inline-start: auto; }
+  .draft-list li .urgent, .draft-list li .late { color: var(--rec); font-size: .88rem; font-weight: 600; }
+  .busy-dot { width: 18px; height: 18px; border-radius: 50%; background: var(--accent); animation: breathe 1.6s ease-in-out infinite; }
+  @keyframes breathe { 0%,100% { opacity: .35; transform: scale(.8); } 50% { opacity: 1; transform: scale(1.1); } }
+  @media (prefers-reduced-motion: reduce) { .busy-dot { animation: none; } }
   .hint { color: var(--muted); text-align: center; font-size: .95rem; margin: 0; max-width: 40ch; }
 
   .alt { margin-top: 28px; border-top: 1px solid var(--line); padding-top: 20px; }
@@ -244,11 +254,13 @@
       <span id="draftText"></span>
       <button class="btn" id="draftBtn" type="button">לבדיקה ושליחה</button>
     </div>
+    <div id="draftList" class="draft-list" hidden aria-label="הרשימה עד עכשיו"></div>
     <label class="f" for="chatIn">ההודעה שלך</label>
     <textarea id="chatIn" rows="2" placeholder="מה על הראש שלך?"></textarea>
     <div class="row">
       <button class="btn" id="chatSend" type="button">שליחת הודעה</button>
       <button class="btn quiet" id="chatMic" type="button" aria-pressed="false">הודעה קולית</button>
+      <button class="btn quiet" id="chatRetry" type="button" hidden>שליחה חוזרת של ההקלטה</button>
       <button class="remove" id="chatReset" type="button">שיחה חדשה</button>
     </div>
   </section>
@@ -258,7 +270,14 @@
     <div class="stage">
       <button id="recBtn" type="button" aria-pressed="false">הקלטה</button>
       <div id="timer" dir="ltr" aria-live="polite"></div>
-      <p class="hint" id="recHint">אפשר לומר כמה משימות ברצף, עם מועדים. למשל: "מחר להתקשר לרונית, ועד יום חמישי לסגור את השיבוץ של עגלות המחשבים, זה דחוף".</p>
+      <p class="hint" id="recHint">אפשר להקליט עד 15 דקות, גם בלי סדר: העוזר יחלק לתחומים וישאל על מה שלא ברור. למשל: "מחר להתקשר לרונית, ועד יום חמישי לסגור את השיבוץ של עגלות המחשבים, זה דחוף".</p>
+    </div>
+
+    <div id="retryBox" class="msg" hidden>
+      <div class="row" style="margin:0">
+        <button class="btn" id="retryBtn" type="button">ניסיון חוזר</button>
+        <a class="btn quiet" id="retryDownload" style="text-decoration:none">שמירת ההקלטה</a>
+      </div>
     </div>
 
     <div id="fileBox" class="msg" hidden>
@@ -279,11 +298,21 @@
 
   <!-- עיבוד -->
   <section id="vBusy" hidden>
-    <div class="stage"><p class="hint" id="busyText" aria-live="polite">מעבד את ההקלטה…</p></div>
+    <div class="stage">
+      <span class="busy-dot" aria-hidden="true"></span>
+      <p class="hint" id="busyText" aria-live="polite" style="color:var(--ink);font-weight:600">מעבד את ההקלטה…</p>
+      <div id="busyTime" dir="ltr" style="font-variant-numeric:tabular-nums;color:var(--muted)">0:00</div>
+      <p class="hint" id="busyHint"></p>
+    </div>
   </section>
 
   <!-- בדיקה ועריכה -->
   <section id="vReview" hidden>
+    <div id="unclearBox" class="msg" hidden>
+      <p style="margin:0 0 6px;font-weight:600">יש כמה דברים שלא ברורים לי:</p>
+      <ul id="unclearList" style="margin:0 0 10px;padding-inline-start:20px"></ul>
+      <button class="btn" id="toChatBtn" type="button">נסדר את זה בשיחה</button>
+    </div>
     <details id="trBox"><summary>מה נשמע בהקלטה</summary><p id="transcript"></p></details>
     <div id="tasks"></div>
     <div class="row" style="margin-top:0">
@@ -351,8 +380,9 @@
 
 <script>
   const $ = id => document.getElementById(id);
-  const MAX_MS = 5 * 60 * 1000;
+  const MAX_MS = 15 * 60 * 1000;
   let rec = null, chunks = [], stream = null, tStart = 0, tInt = null;
+  let lastAudio = null;   // ההקלטה האחרונה נשמרת בזיכרון, כדי שאפשר יהיה לנסות שוב אם העיבוד נכשל
   let current = [];
   let mode = 'quick';
 
@@ -383,70 +413,157 @@
       return;
     }
     chunks = [];
-    rec = new MediaRecorder(stream);
+    rec = newRecorder(stream);
     rec.ondataavailable = e => { if (e.data && e.data.size) chunks.push(e.data); };
     rec.onstop = () => {
       stream.getTracks().forEach(t => t.stop());
       clearInterval(tInt);
+      keepAwake(false);
+      const ms = Date.now() - tStart;
       $('timer').textContent = '';
       $('recBtn').classList.remove('recording');
       $('recBtn').textContent = 'הקלטה';
       $('recBtn').setAttribute('aria-pressed', 'false');
-      handleAudio(new Blob(chunks, { type: rec.mimeType || 'audio/webm' }));
+      handleAudio(new Blob(chunks, { type: rec.mimeType || 'audio/webm' }), ms);
     };
-    rec.start();
+    rec.start(1000); // חלקים של שנייה – כך לא הולך לאיבוד הכול אם משהו נתקע
     tStart = Date.now();
+    keepAwake(true);
     $('recBtn').classList.add('recording');
     $('recBtn').textContent = 'סיום';
     $('recBtn').setAttribute('aria-pressed', 'true');
     tInt = setInterval(() => {
-      const s = Math.floor((Date.now() - tStart) / 1000);
-      $('timer').textContent = Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
-      if (Date.now() - tStart > MAX_MS && rec.state === 'recording') rec.stop();
+      const ms = Date.now() - tStart;
+      $('timer').textContent = fmtClock(ms) + ' / 15:00' + (ms > MAX_MS - 60000 ? ' · נשארה פחות מדקה' : '');
+      if (ms > MAX_MS && rec.state === 'recording') rec.stop();
     }, 250);
   };
 
   $('fileIn').onchange = e => {
     const f = e.target.files[0];
-    if (f) handleAudio(f);
+    if (f) handleAudio(f, 0);
     e.target.value = '';
   };
 
-  async function handleAudio(blob) {
-    err('');
-    show('vBusy');
-    $('busyText').textContent = 'מעבד את ההקלטה…';
-    let audio = blob;
-    try { audio = await toWav(blob); } catch (e) { /* שולחים את הקובץ המקורי */ }
-    const b64 = await blobToBase64(audio);
-    const mime = (audio.type || 'audio/wav').split(';')[0];
-    run().withSuccessHandler(showReview).withFailureHandler(fail).processAudio(b64, mime);
+  // פורמטים ש-Gemini מקבל ישירות. כרום באנדרואיד מקליט WebM/Opus – נשלח כמו שהוא, בלי המרה
+  const GEMINI_AUDIO = {
+    'audio/webm': 'audio/webm', 'audio/ogg': 'audio/ogg', 'audio/opus': 'audio/opus',
+    'audio/mpeg': 'audio/mpeg', 'audio/mp3': 'audio/mp3', 'audio/wav': 'audio/wav', 'audio/x-wav': 'audio/wav',
+    'audio/aac': 'audio/aac', 'audio/flac': 'audio/flac', 'audio/aiff': 'audio/aiff',
+    'audio/m4a': 'audio/m4a', 'audio/x-m4a': 'audio/m4a', 'audio/mp4': 'audio/m4a'
+  };
+  function newRecorder(s) {
+    const types = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus', 'audio/mp4'];
+    const mimeType = types.find(t => MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(t));
+    // 32kbps מספיק לדיבור: 15 דקות ≈ 3.6MB
+    try { return new MediaRecorder(s, mimeType ? { mimeType, audioBitsPerSecond: 32000 } : { audioBitsPerSecond: 32000 }); }
+    catch (e) { return new MediaRecorder(s); }
   }
+  async function prepareAudio(blob) {
+    const mime = GEMINI_AUDIO[(blob.type || '').split(';')[0].toLowerCase()];
+    if (mime) return { blob, mime };
+    return { blob: await toWav(blob), mime: 'audio/wav' };
+  }
+
+  let wakeLock = null;
+  async function keepAwake(on) {
+    try {
+      if (on && 'wakeLock' in navigator) wakeLock = await navigator.wakeLock.request('screen');
+      else if (!on && wakeLock) { await wakeLock.release(); wakeLock = null; }
+    } catch (e) { /* לא נתמך – ממשיכים */ }
+  }
+  const fmtClock = ms => { const s = Math.floor(ms / 1000); return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0'); };
+
+  let busyInt = null;
+  function startBusy(text, hint) {
+    show('vBusy');
+    $('busyText').textContent = text;
+    $('busyHint').textContent = hint || '';
+    const t0 = Date.now();
+    $('busyTime').textContent = '0:00';
+    clearInterval(busyInt);
+    busyInt = setInterval(() => { $('busyTime').textContent = fmtClock(Date.now() - t0); }, 500);
+  }
+  function stopBusy() { clearInterval(busyInt); }
+
+  async function handleAudio(blob, ms) {
+    lastAudio = { blob, ms };
+    err('');
+    $('retryBox').hidden = true;
+    startBusy('מעבד את ההקלטה…', ms > 2 * 60000 ? 'הקלטה ארוכה – זה יכול לקחת דקה או שתיים. אפשר להשאיר את המסך פתוח.' : '');
+    let r;
+    try {
+      let a;
+      try { a = await prepareAudio(blob); } catch (e) { a = { blob, mime: (blob.type || 'audio/webm').split(';')[0] }; }
+      try {
+        r = await callApi('processAudio', [await blobToBase64(a.blob), a.mime]);
+      } catch (e) {
+        // Gemini דחה את הפורמט – בהקלטה קצרה ממירים ל-WAV ומנסים שוב
+        if (a.mime === 'audio/wav' || !/\(400\)/.test(e.message) || ms > 5 * 60000) throw e;
+        const wav = await toWav(blob);
+        r = await callApi('processAudio', [await blobToBase64(wav), 'audio/wav']);
+      }
+    } catch (e) {
+      stopBusy();
+      return audioFailed(e);
+    }
+    stopBusy();
+    showReview(r);
+  }
+
+  function audioFailed(e) {
+    show('vRecord');
+    err(((e && e.message) || String(e)) + ' ההקלטה לא נמחקה – אפשר לנסות שוב.');
+    const ext = /webm/.test(lastAudio.blob.type) ? 'webm' : /ogg/.test(lastAudio.blob.type) ? 'ogg' : /mp4|m4a/.test(lastAudio.blob.type) ? 'm4a' : 'wav';
+    const a = $('retryDownload');
+    if (a.href) URL.revokeObjectURL(a.href);
+    a.href = URL.createObjectURL(lastAudio.blob);
+    const now = new Date();
+    a.download = 'הקלטה-' + ymd(now) + '-' + pad(now.getHours()) + pad(now.getMinutes()) + '.' + ext;
+    $('retryBox').hidden = false;
+  }
+  $('retryBtn').onclick = () => { if (lastAudio) handleAudio(lastAudio.blob, lastAudio.ms); };
 
   // ---------- טקסט ----------
   $('textBtn').onclick = () => {
     const t = $('textIn').value.trim();
     if (!t) { err('כתבי לפחות משימה אחת לפני העיבוד.'); return; }
     err('');
-    show('vBusy');
-    $('busyText').textContent = 'מעבד את הטקסט…';
-    run().withSuccessHandler(showReview).withFailureHandler(fail).processText(t);
+    startBusy('מעבד את הטקסט…');
+    run()
+      .withSuccessHandler(r => { stopBusy(); showReview(r, t); })
+      .withFailureHandler(e => { stopBusy(); fail(e); })
+      .processText(t);
   };
 
   // ---------- בדיקה ועריכה ----------
   let reviewSource = 'quick';
-  function showReview(r) {
+  let lastQuickText = '';
+  function showReview(r, sourceText) {
     reviewSource = 'quick';
     current = (r.tasks || []).map(t => Object.assign({}, t));
+    lastQuickText = r.transcript || sourceText || '';
     $('transcript').textContent = r.transcript || '';
     $('trBox').hidden = !r.transcript;
+    // הרבה דברים לא ברורים – מציעים לעבור לשיחה עם העוזר
+    const unclear = r.unclear || [];
+    $('unclearBox').hidden = unclear.length < 2;
+    $('unclearList').innerHTML = '';
+    unclear.forEach(u => { const li = document.createElement('li'); li.textContent = u; $('unclearList').appendChild(li); });
     if (!current.length) {
+      if (unclear.length && lastQuickText) return toChat();
       show('vRecord');
       err('לא זוהו משימות. נסי לנסח עם פעולה ברורה, למשל "להתקשר ל..." או "לשלוח את...".');
       return;
     }
     renderTasks();
     show('vReview');
+  }
+  function toChat() {
+    const text = lastQuickText;
+    clearChat();
+    setMode('chat');
+    if (text) chatSend('הנה מה שאמרתי, עזרי לי לסדר את זה למשימות:\n' + text);
   }
 
   function renderTasks() {
@@ -463,13 +580,18 @@
           '<label>תאריך יעד <input type="date" class="d"></label>' +
           '<label><input type="checkbox" class="u"> דחוף</label>' +
           '<button type="button" class="remove">הסרה</button>' +
-        '</div>';
+        '</div>' +
+        '<p class="dup" hidden></p>';
       const q = s => d.querySelector(s);
       q('.t').value = t.title;
       q('.n').value = t.notes || '';
       q('.d').value = t.dueDate || '';
       q('.u').checked = t.importance === 'high';
-      fillAreaSelect(q('.a'), t.area || '');
+      if (t.duplicateOf) {
+        q('.dup').hidden = false;
+        q('.dup').textContent = 'דומה למשימה שכבר יש לך: "' + t.duplicateOf + '". אם זו אותה משימה, אפשר להסיר.';
+      }
+      fillAreaSelect(q('.a'), t.area || '', 'חדש');
       paintArea(d, t.area);
       q('.a').onchange = e => { t.area = e.target.value; paintArea(d, t.area); };
       q('.t').oninput = e => { t.title = e.target.value; };
@@ -487,14 +609,16 @@
       : 'שליחת ' + current.length + ' משימות ל-Outlook';
   }
 
-  function fillAreaSelect(sel, value) {
+  // תחום שלא ברשימה (נמחק, או שהעוזר הציע חדש) עדיין מוצג, עם סימון
+  function fillAreaSelect(sel, value, unknownLabel) {
     const names = areas.map(a => a.name);
-    if (value && !names.includes(value)) names.push(value); // תחום שנמחק מהרשימה עדיין מוצג
+    const unknown = value && !names.includes(value);
+    if (unknown) names.push(value);
     sel.innerHTML = '';
     [''].concat(names).forEach(n => {
       const o = document.createElement('option');
       o.value = n;
-      o.textContent = n || 'ללא תחום';
+      o.textContent = !n ? 'ללא תחום' : (unknown && n === value && unknownLabel ? n + ' (' + unknownLabel + ')' : n);
       sel.appendChild(o);
     });
     sel.value = value;
@@ -513,6 +637,7 @@
       .withSuccessHandler(r => {
         $('sendBtn').disabled = false;
         const n = r.created.length;
+        if (r.areas) setAreas(r.areas); // העוזר הציע תחום חדש, והוא נשמר
         if (tasks) { tasks.push(...r.created); saveTasksCache(); }
         if (r.failed.length) {
           current = r.failed;
@@ -593,19 +718,57 @@
   function updateDraft(done) {
     const n = chatTasks.length;
     $('draft').hidden = !n;
+    $('draftList').hidden = !n;
     $('draft').classList.toggle('done', !!done);
     $('draftText').textContent = n === 1 ? 'משימה אחת ברשימה' : n + ' משימות ברשימה';
+    renderDraftList();
+  }
+
+  // הרשימה המצטברת בשיחה, מקובצת לפי תחום ומסודרת לפי מועד
+  function renderDraftList() {
+    const box = $('draftList');
+    box.innerHTML = '';
+    const names = areas.map(a => a.name);
+    chatTasks.forEach(t => { if (t.area && !names.includes(t.area)) names.push(t.area); });
+    names.push('');
+    names.forEach(name => {
+      const items = chatTasks.filter(t => (t.area || '') === name).sort(byDue);
+      if (!items.length) return;
+      const h = document.createElement('h3');
+      h.innerHTML = '<span class="dot"></span><span></span>';
+      h.firstChild.style.background = areaColor(name) || '';
+      h.lastChild.textContent = (name || 'ללא תחום') + (name && !areas.some(a => a.name === name) ? ' (תחום חדש)' : '');
+      const ul = document.createElement('ul');
+      items.forEach(t => {
+        const li = document.createElement('li');
+        const add = (text, cls) => { const s = document.createElement('span'); s.textContent = text; if (cls) s.className = cls; li.appendChild(s); };
+        add(t.title);
+        if (t.importance === 'high') add('דחוף', 'urgent');
+        if (t.duplicateOf) add('דומה למשימה קיימת', 'late');
+        add(t.dueDate ? fmtDate(t.dueDate) : 'בלי תאריך', 'when');
+        ul.appendChild(li);
+      });
+      box.append(h, ul);
+    });
   }
   function setChatBusy(b) { $('chatSend').disabled = b; $('chatMic').disabled = b; }
 
+  let lastChatAudio = null;
   function chatSend(text, b64, mime) {
     err('');
+    $('chatRetry').hidden = true;
     setChatBusy(true);
     const mine = addMsg('user', text || 'הודעה קולית…');
     const typing = addMsg('model', 'חושב…');
     typing.classList.add('typing');
+    const t0 = Date.now();
+    const tick = setInterval(() => {
+      const s = (Date.now() - t0) / 1000;
+      typing.textContent = (s > 8 && b64 ? 'מתמלל ומארגן… ' : 'חושב… ') + fmtClock(Date.now() - t0);
+    }, 1000);
     run()
       .withSuccessHandler(r => {
+        clearInterval(tick);
         typing.remove();
         const said = r.userText || text || '';
         mine.textContent = said;
@@ -614,15 +777,19 @@
         chatTasks = r.tasks || [];
         updateDraft(r.done);
         setChatBusy(false);
+        lastChatAudio = null;
       })
       .withFailureHandler(e => {
+        clearInterval(tick);
         typing.remove(); mine.remove();
         if (text) $('chatIn').value = text;
         setChatBusy(false);
+        if (b64) { lastChatAudio = { b64, mime }; $('chatRetry').hidden = false; }
         err((e && e.message) || String(e));
       })
       .chatTurn(chatHist.slice(-30), text || '', b64 || '', mime || '');
   }
+  $('chatRetry').onclick = () => { if (lastChatAudio) chatSend('', lastChatAudio.b64, lastChatAudio.mime); };
 
   $('chatSend').onclick = () => {
     const t = $('chatIn').value.trim();
@@ -642,23 +809,33 @@
       return;
     }
     chatChunks = [];
-    chatRec = new MediaRecorder(chatStream);
+    chatRec = newRecorder(chatStream);
     chatRec.ondataavailable = e => { if (e.data && e.data.size) chatChunks.push(e.data); };
+    const c0 = Date.now();
+    const cInt = setInterval(() => {
+      const ms = Date.now() - c0;
+      $('chatMic').textContent = 'סיום הקלטה ' + fmtClock(ms);
+      if (ms > MAX_MS && chatRec.state === 'recording') chatRec.stop();
+    }, 500);
     chatRec.onstop = async () => {
+      clearInterval(cInt);
+      keepAwake(false);
       chatStream.getTracks().forEach(t => t.stop());
       $('chatMic').textContent = 'הודעה קולית';
       $('chatMic').classList.remove('rec');
       $('chatMic').setAttribute('aria-pressed', 'false');
-      let a = new Blob(chatChunks, { type: chatRec.mimeType || 'audio/webm' });
-      try { a = await toWav(a); } catch (e) { /* שולחים את המקור */ }
-      const b64 = await blobToBase64(a);
-      chatSend('', b64, (a.type || 'audio/wav').split(';')[0]);
+      const raw = new Blob(chatChunks, { type: chatRec.mimeType || 'audio/webm' });
+      let a;
+      try { a = await prepareAudio(raw); } catch (e) { a = { blob: raw, mime: (raw.type || 'audio/webm').split(';')[0] }; }
+      chatSend('', await blobToBase64(a.blob), a.mime);
     };
-    chatRec.start();
-    $('chatMic').textContent = 'סיום הקלטה';
+    chatRec.start(1000);
+    keepAwake(true);
+    $('chatMic').textContent = 'סיום הקלטה 0:00';
     $('chatMic').classList.add('rec');
     $('chatMic').setAttribute('aria-pressed', 'true');
   };
+  $('toChatBtn').onclick = toChat;
 
   $('chatReset').onclick = clearChat;
 
