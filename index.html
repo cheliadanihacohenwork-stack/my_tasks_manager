@@ -216,6 +216,7 @@
     <div class="toolbar">
       <input type="search" id="taskSearch" placeholder="חיפוש" aria-label="חיפוש משימות">
       <button type="button" class="chip-btn" id="urgentOnly" aria-pressed="false">רק דחוף</button>
+      <button type="button" class="chip-btn" id="taskAdd" aria-label="הוספת משימה ידנית">+ משימה</button>
     </div>
     <div id="taskList" aria-live="polite"></div>
     <p style="text-align:center"><button class="remove" id="taskReload" type="button" style="margin:0">רענון הרשימה</button></p>
@@ -268,7 +269,11 @@
     <div class="alt">
       <label class="f" for="textIn">או להקליד</label>
       <textarea id="textIn" placeholder="למשל: להזמין חדר מחשבים ליום שלישי לשכבת י'"></textarea>
-      <div class="row"><button class="btn quiet" id="textBtn" type="button">עיבוד הטקסט</button></div>
+      <div class="row">
+        <button class="btn quiet" id="textBtn" type="button">עיבוד הטקסט</button>
+        <button class="btn quiet" id="manualBtn" type="button">הוספה ידנית</button>
+      </div>
+      <p class="hint" style="text-align:start;margin-top:8px">"הוספה ידנית" מדלגת על העיבוד: הטקסט שכתבת הופך לכותרת, ואפשר להשלים פרטים לפני השמירה.</p>
     </div>
   </section>
 
@@ -281,6 +286,9 @@
   <section id="vReview" hidden>
     <details id="trBox"><summary>מה נשמע בהקלטה</summary><p id="transcript"></p></details>
     <div id="tasks"></div>
+    <div class="row" style="margin-top:0">
+      <button class="btn quiet" id="addRowBtn" type="button">+ עוד משימה</button>
+    </div>
     <div class="row">
       <button class="btn" id="sendBtn" type="button">שליחה ל-Outlook</button>
       <button class="btn quiet" id="againBtn" type="button">ביטול</button>
@@ -426,7 +434,9 @@
   };
 
   // ---------- בדיקה ועריכה ----------
+  let reviewSource = 'quick';
   function showReview(r) {
+    reviewSource = 'quick';
     current = (r.tasks || []).map(t => Object.assign({}, t));
     $('transcript').textContent = r.transcript || '';
     $('trBox').hidden = !r.transcript;
@@ -517,7 +527,34 @@
         show('vDone');
       })
       .withFailureHandler(e => { $('sendBtn').disabled = false; err((e && e.message) || String(e)); })
-      .createTasks(current, mode === 'chat' ? 'chat' : 'quick');
+      .createTasks(current, reviewSource);
+  };
+
+  // ---------- הוספה ידנית (בלי Gemini) ----------
+  const blankTask = title => ({ title: title || '', notes: '', dueDate: '', importance: 'normal', area: '' });
+  function focusLastTitle() {
+    const inputs = $('tasks').querySelectorAll('.t');
+    if (inputs.length) inputs[inputs.length - 1].focus();
+  }
+  function manualAdd(title) {
+    err('');
+    reviewSource = 'manual';
+    current = [blankTask(title)];
+    $('trBox').hidden = true;
+    renderTasks();
+    show('vReview');
+    focusLastTitle();
+  }
+  $('manualBtn').onclick = () => {
+    const text = $('textIn').value.trim();
+    manualAdd(text.slice(0, 200));
+    $('textIn').value = '';
+  };
+  $('taskAdd').onclick = () => manualAdd('');
+  $('addRowBtn').onclick = () => {
+    current.push(blankTask(''));
+    renderTasks();
+    focusLastTitle();
   };
 
   function reset() { current = []; $('textIn').value = ''; home(); }
@@ -626,6 +663,7 @@
   $('chatReset').onclick = clearChat;
 
   $('draftBtn').onclick = () => {
+    reviewSource = 'chat';
     current = chatTasks.map(t => Object.assign({}, t));
     $('trBox').hidden = true;
     renderTasks();

@@ -119,7 +119,7 @@ function extractTasks_(parts) {
         required: ['transcript', 'tasks']
       }
     }
-  });
+  }, 'minimal');
   return {
     transcript: out.transcript || '',
     tasks: (out.tasks || []).map(clean_).filter(function (t) { return t.title; })
@@ -175,7 +175,7 @@ function chatTurn(history, text, audioB64, mimeType) {
         required: ['userText', 'reply', 'tasks', 'done']
       }
     }
-  });
+  }, 'low');
 
   return {
     userText: out.userText || text || '',
@@ -187,32 +187,64 @@ function chatTurn(history, text, audioB64, mimeType) {
 
 /* ================= משותף ================= */
 
-/** קוראת ל-Gemini. בעומס (429/5xx) מנסה שוב, ואז עוברת לדגם הגיבוי */
-function geminiJson_(request) {
+/**
+ * כמה "לחשוב" לפני התשובה. חשיבה ארוכה היא הסיבה העיקרית לאיטיות.
+ * דגמי Gemini 3 מקבלים thinkingLevel, ודגמי 2.5 מקבלים thinkingBudget. לא ידוע מראש לאיזה דגם הכינוי מפנה,
+ * לכן מנסים לפי הסדר, ושומרים ב-Script Properties את הצורה שעבדה לכל דגם.
+ */
+const THINKING_VARIANTS = [
+  function (level) { return { thinkingLevel: level }; },
+  function (level) { return { thinkingBudget: level === 'minimal' ? 0 : 512 }; },
+  function () { return null; } // בלי הגדרה – ברירת המחדל של הדגם
+];
+
+function withThinking_(request, variant, level) {
+  const tc = level ? THINKING_VARIANTS[variant](level) : null;
+  if (!tc) return JSON.stringify(request);
+  const gc = Object.assign({}, request.generationConfig, { thinkingConfig: tc });
+  return JSON.stringify(Object.assign({}, request, { generationConfig: gc }));
+}
+
+/** קוראת ל-Gemini. בעומס (429/5xx) מנסה שוב, ואז עוברת לדגם הגיבוי. level = 'minimal' | 'low' */
+function geminiJson_(request, level) {
   const settings = getSettings_();
-  const payload = JSON.stringify(request);
+  const props = PropertiesService.getScriptProperties();
   const models = [MODEL].concat(FALLBACK_MODELS);
   let body = '';
   let ok = false;
 
   for (let m = 0; m < models.length && !ok; m++) {
-    for (let attempt = 0; attempt < 2; attempt++) {
+    const key = 'THINKING_' + models[m];
+    const saved = Number(props.getProperty(key) || 0);
+    let variant = saved;
+    let attempt = 0;
+    while (attempt < 2) {
       const res = UrlFetchApp.fetch(
         'https://generativelanguage.googleapis.com/v1beta/models/' + models[m] + ':generateContent', {
           method: 'post',
           contentType: 'application/json',
           headers: { 'x-goog-api-key': settings.key },
-          payload: payload,
+          payload: withThinking_(request, variant, level),
           muteHttpExceptions: true
         });
       const code = res.getResponseCode();
       body = res.getContentText();
-      if (code === 200) { ok = true; break; }
+      if (code === 200) {
+        ok = true;
+        if (level && variant !== saved) props.setProperty(key, String(variant));
+        break;
+      }
+      // הדגם לא מכיר את צורת הגדרת החשיבה – עוברים לצורה הבאה (לא נחשב כניסיון)
+      if (code === 400 && level && /thinking/i.test(body) && variant < THINKING_VARIANTS.length - 1) {
+        variant++;
+        continue;
+      }
       if (code === 404 && m > 0) break; // דגם הגיבוי לא קיים – מדלגים
       if (code !== 429 && code < 500) {
         throw new Error('Gemini החזיר שגיאה (' + code + '): ' + body.slice(0, 300));
       }
-      if (attempt === 0) Utilities.sleep(2000);
+      attempt++;
+      if (attempt === 1) Utilities.sleep(2000);
     }
   }
   if (!ok) throw new Error('Gemini עמוס כרגע. נסי שוב בעוד דקה או שתיים.');
