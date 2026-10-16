@@ -1,0 +1,547 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>משימות בקול</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Assistant:wght@400;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #EEF2F0; --surface: #FFFFFF; --ink: #1C2826; --muted: #5E6E6B;
+    --line: #D3DCD9; --accent: #2E6B5E; --accent-ink: #FFFFFF; --rec: #C23B22; --soft: #DDE7E3;
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #141B1A; --surface: #1D2725; --ink: #E6EEEC; --muted: #9AAAA6;
+      --line: #33413E; --accent: #6FB8A6; --accent-ink: #0F1716; --rec: #F07258; --soft: #24302E;
+      color-scheme: dark;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body {
+    background: var(--bg); color: var(--ink);
+    font-family: 'Assistant', system-ui, -apple-system, 'Segoe UI', Arial, sans-serif;
+    font-size: 17px; line-height: 1.5;
+  }
+  main { max-width: 520px; margin: 0 auto; padding: 28px 20px 48px; }
+  h1 { font-size: 1.6rem; margin: 0 0 4px; font-weight: 700; }
+  .sub { color: var(--muted); margin: 0 0 24px; }
+
+  .stage { display: flex; flex-direction: column; align-items: center; gap: 14px; padding: 20px 0 8px; }
+  #recBtn {
+    width: 150px; height: 150px; border-radius: 50%; border: none; cursor: pointer;
+    background: var(--accent); color: var(--accent-ink);
+    font: inherit; font-size: 1.2rem; font-weight: 700;
+    box-shadow: 0 0 0 10px var(--soft); transition: background .2s;
+  }
+  #recBtn.recording { background: var(--rec); animation: pulse 1.4s ease-in-out infinite; }
+  #recBtn:disabled { opacity: .4; cursor: default; }
+  @keyframes pulse { 0%,100% { box-shadow: 0 0 0 10px var(--soft); } 50% { box-shadow: 0 0 0 22px var(--soft); } }
+  @media (prefers-reduced-motion: reduce) { #recBtn.recording { animation: none; } }
+  #timer { font-variant-numeric: tabular-nums; color: var(--muted); min-height: 1.5em; }
+  .hint { color: var(--muted); text-align: center; font-size: .95rem; margin: 0; max-width: 40ch; }
+
+  .alt { margin-top: 28px; border-top: 1px solid var(--line); padding-top: 20px; }
+  label.f { font-size: .9rem; color: var(--muted); display: block; margin-bottom: 4px; }
+  textarea, input[type=text], input[type=date] {
+    width: 100%; font: inherit; color: var(--ink); background: var(--surface);
+    border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px;
+  }
+  textarea { resize: vertical; min-height: 72px; }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-top: 12px; }
+  .btn {
+    font: inherit; font-weight: 600; border: none; border-radius: 8px; padding: 11px 18px; cursor: pointer;
+    background: var(--accent); color: var(--accent-ink);
+  }
+  .btn.quiet { background: transparent; color: var(--ink); border: 1px solid var(--line); }
+  .btn:disabled { opacity: .5; cursor: default; }
+  :focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+
+  .task {
+    background: var(--surface); border: 1px solid var(--line); border-radius: 12px;
+    padding: 14px; margin-bottom: 12px; display: grid; gap: 10px;
+  }
+  .task .t { font-weight: 600; }
+  .meta { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; }
+  .meta input[type=date] { width: auto; }
+  .meta label { display: flex; gap: 6px; align-items: center; color: var(--muted); font-size: .95rem; }
+  .remove { margin-inline-start: auto; background: none; border: none; color: var(--muted); cursor: pointer; text-decoration: underline; font: inherit; font-size: .9rem; }
+
+  details { color: var(--muted); margin-bottom: 16px; }
+  details p { color: var(--ink); background: var(--surface); padding: 10px 12px; border-radius: 8px; }
+  .msg { padding: 12px 14px; border-radius: 8px; background: var(--soft); margin: 14px 0; }
+  .msg.err { border-inline-start: 4px solid var(--rec); }
+  .tabs { display: flex; gap: 4px; background: var(--soft); padding: 4px; border-radius: 10px; margin-bottom: 18px; }
+  .tabs button {
+    flex: 1; font: inherit; font-weight: 600; border: none; background: transparent; color: var(--muted);
+    padding: 9px; border-radius: 8px; cursor: pointer;
+  }
+  .tabs button[aria-selected="true"] { background: var(--surface); color: var(--ink); }
+
+  #log { display: flex; flex-direction: column; gap: 10px; margin-bottom: 14px; }
+  .msg-user, .msg-model { max-width: 85%; padding: 10px 14px; border-radius: 14px; white-space: pre-wrap; }
+  .msg-user { align-self: flex-end; background: var(--accent); color: var(--accent-ink); }
+  .msg-model { align-self: flex-start; background: var(--surface); border: 1px solid var(--line); }
+  .msg-model.typing { color: var(--muted); }
+  .draft {
+    display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    background: var(--soft); border-radius: 10px; padding: 10px 12px; margin-bottom: 12px;
+  }
+  .draft.done { outline: 2px solid var(--accent); }
+  #chatMic.rec { border-color: var(--rec); color: var(--rec); }
+
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+  <h1>משימות בקול</h1>
+  <p class="sub">מקליטים, בודקים, והמשימות נכנסות ל-Outlook.</p>
+
+  <!-- הגדרה ראשונית -->
+  <section id="vSetup" hidden>
+    <p>הגדרה חד-פעמית במכשיר הזה.</p>
+    <label class="f" for="cfgUrl">כתובת השרת (הקישור מ-Apps Script)</label>
+    <input type="text" id="cfgUrl" dir="ltr" placeholder="https://script.google.com/macros/s/.../exec">
+    <label class="f" for="cfgToken" style="margin-top:12px">קוד גישה</label>
+    <input type="text" id="cfgToken" dir="ltr" autocomplete="off">
+    <div class="row"><button class="btn" id="cfgSave" type="button">שמירה</button></div>
+  </section>
+
+  <nav class="tabs" id="tabs" role="tablist">
+    <button type="button" role="tab" id="tabQuick" aria-selected="true">הקלטה מהירה</button>
+    <button type="button" role="tab" id="tabChat" aria-selected="false">שיחה</button>
+  </nav>
+
+  <!-- שיחה -->
+  <section id="vChat" hidden>
+    <div id="log" aria-live="polite"></div>
+    <div id="draft" class="draft" hidden>
+      <span id="draftText"></span>
+      <button class="btn" id="draftBtn" type="button">לבדיקה ושליחה</button>
+    </div>
+    <label class="f" for="chatIn">ההודעה שלך</label>
+    <textarea id="chatIn" rows="2" placeholder="מה על הראש שלך?"></textarea>
+    <div class="row">
+      <button class="btn" id="chatSend" type="button">שליחת הודעה</button>
+      <button class="btn quiet" id="chatMic" type="button" aria-pressed="false">הודעה קולית</button>
+      <button class="remove" id="chatReset" type="button">שיחה חדשה</button>
+    </div>
+  </section>
+
+  <!-- הקלטה -->
+  <section id="vRecord">
+    <div class="stage">
+      <button id="recBtn" type="button" aria-pressed="false">הקלטה</button>
+      <div id="timer" dir="ltr" aria-live="polite"></div>
+      <p class="hint" id="recHint">אפשר לומר כמה משימות ברצף, עם מועדים. למשל: "מחר להתקשר לרונית, ועד יום חמישי לסגור את השיבוץ של עגלות המחשבים, זה דחוף".</p>
+    </div>
+
+    <div id="fileBox" class="msg" hidden>
+      <p style="margin:0 0 8px">הדפדפן לא מאפשר גישה למיקרופון מהדף הזה. אפשר להקליט בטלפון ולבחור את קובץ ההקלטה:</p>
+      <input type="file" id="fileIn" accept="audio/*" capture>
+    </div>
+
+    <div class="alt">
+      <label class="f" for="textIn">או להקליד</label>
+      <textarea id="textIn" placeholder="למשל: להזמין חדר מחשבים ליום שלישי לשכבת י'"></textarea>
+      <div class="row"><button class="btn quiet" id="textBtn" type="button">עיבוד הטקסט</button></div>
+    </div>
+  </section>
+
+  <!-- עיבוד -->
+  <section id="vBusy" hidden>
+    <div class="stage"><p class="hint" id="busyText" aria-live="polite">מעבד את ההקלטה…</p></div>
+  </section>
+
+  <!-- בדיקה ועריכה -->
+  <section id="vReview" hidden>
+    <details id="trBox"><summary>מה נשמע בהקלטה</summary><p id="transcript"></p></details>
+    <div id="tasks"></div>
+    <div class="row">
+      <button class="btn" id="sendBtn" type="button">שליחה ל-Outlook</button>
+      <button class="btn quiet" id="againBtn" type="button">ביטול</button>
+    </div>
+  </section>
+
+  <!-- סיום -->
+  <section id="vDone" hidden>
+    <div class="msg" id="doneText"></div>
+    <button class="btn" id="newBtn" type="button">משימה חדשה</button>
+  </section>
+
+  <div id="err" class="msg err" role="alert" hidden></div>
+  <p style="margin-top:32px"><button class="remove" id="openSetup" type="button">הגדרות חיבור</button></p>
+</main>
+
+<script>
+  const $ = id => document.getElementById(id);
+  const MAX_MS = 5 * 60 * 1000;
+  let rec = null, chunks = [], stream = null, tStart = 0, tInt = null;
+  let current = [];
+  let mode = 'quick';
+
+  function show(view) {
+    ['vSetup', 'vRecord', 'vChat', 'vBusy', 'vReview', 'vDone'].forEach(v => $(v).hidden = (v !== view));
+    $('tabs').hidden = !(view === 'vRecord' || view === 'vChat');
+  }
+  function home() { err(''); show(mode === 'chat' ? 'vChat' : 'vRecord'); }
+  function err(m) { $('err').textContent = m || ''; $('err').hidden = !m; }
+  function fail(e) { show('vRecord'); err((e && e.message) || String(e)); }
+
+  // ---------- הקלטה ----------
+  $('recBtn').onclick = async () => {
+    if (rec && rec.state === 'recording') { rec.stop(); return; }
+    err('');
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch (e) {
+      $('fileBox').hidden = false;
+      $('recBtn').disabled = true;
+      $('recHint').hidden = true;
+      return;
+    }
+    chunks = [];
+    rec = new MediaRecorder(stream);
+    rec.ondataavailable = e => { if (e.data && e.data.size) chunks.push(e.data); };
+    rec.onstop = () => {
+      stream.getTracks().forEach(t => t.stop());
+      clearInterval(tInt);
+      $('timer').textContent = '';
+      $('recBtn').classList.remove('recording');
+      $('recBtn').textContent = 'הקלטה';
+      $('recBtn').setAttribute('aria-pressed', 'false');
+      handleAudio(new Blob(chunks, { type: rec.mimeType || 'audio/webm' }));
+    };
+    rec.start();
+    tStart = Date.now();
+    $('recBtn').classList.add('recording');
+    $('recBtn').textContent = 'סיום';
+    $('recBtn').setAttribute('aria-pressed', 'true');
+    tInt = setInterval(() => {
+      const s = Math.floor((Date.now() - tStart) / 1000);
+      $('timer').textContent = Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
+      if (Date.now() - tStart > MAX_MS && rec.state === 'recording') rec.stop();
+    }, 250);
+  };
+
+  $('fileIn').onchange = e => {
+    const f = e.target.files[0];
+    if (f) handleAudio(f);
+    e.target.value = '';
+  };
+
+  async function handleAudio(blob) {
+    err('');
+    show('vBusy');
+    $('busyText').textContent = 'מעבד את ההקלטה…';
+    let audio = blob;
+    try { audio = await toWav(blob); } catch (e) { /* שולחים את הקובץ המקורי */ }
+    const b64 = await blobToBase64(audio);
+    const mime = (audio.type || 'audio/wav').split(';')[0];
+    run().withSuccessHandler(showReview).withFailureHandler(fail).processAudio(b64, mime);
+  }
+
+  // ---------- טקסט ----------
+  $('textBtn').onclick = () => {
+    const t = $('textIn').value.trim();
+    if (!t) { err('כתבי לפחות משימה אחת לפני העיבוד.'); return; }
+    err('');
+    show('vBusy');
+    $('busyText').textContent = 'מעבד את הטקסט…';
+    run().withSuccessHandler(showReview).withFailureHandler(fail).processText(t);
+  };
+
+  // ---------- בדיקה ועריכה ----------
+  function showReview(r) {
+    current = (r.tasks || []).map(t => Object.assign({}, t));
+    $('transcript').textContent = r.transcript || '';
+    $('trBox').hidden = !r.transcript;
+    if (!current.length) {
+      show('vRecord');
+      err('לא זוהו משימות. נסי לנסח עם פעולה ברורה, למשל "להתקשר ל..." או "לשלוח את...".');
+      return;
+    }
+    renderTasks();
+    show('vReview');
+  }
+
+  function renderTasks() {
+    const box = $('tasks');
+    box.innerHTML = '';
+    current.forEach((t, i) => {
+      const d = document.createElement('div');
+      d.className = 'task';
+      d.innerHTML =
+        '<input type="text" class="t" aria-label="כותרת המשימה">' +
+        '<textarea class="n" aria-label="פרטים" placeholder="פרטים (לא חובה)"></textarea>' +
+        '<div class="meta">' +
+          '<label>תאריך יעד <input type="date" class="d"></label>' +
+          '<label><input type="checkbox" class="u"> דחוף</label>' +
+          '<button type="button" class="remove">הסרה</button>' +
+        '</div>';
+      const q = s => d.querySelector(s);
+      q('.t').value = t.title;
+      q('.n').value = t.notes || '';
+      q('.d').value = t.dueDate || '';
+      q('.u').checked = t.importance === 'high';
+      q('.t').oninput = e => { t.title = e.target.value; };
+      q('.n').oninput = e => { t.notes = e.target.value; };
+      q('.d').onchange = e => { t.dueDate = e.target.value; };
+      q('.u').onchange = e => { t.importance = e.target.checked ? 'high' : 'normal'; };
+      q('.remove').onclick = () => {
+        current.splice(i, 1);
+        if (current.length) renderTasks(); else reset();
+      };
+      box.appendChild(d);
+    });
+    $('sendBtn').textContent = current.length === 1
+      ? 'שליחה ל-Outlook'
+      : 'שליחת ' + current.length + ' משימות ל-Outlook';
+  }
+
+  $('sendBtn').onclick = () => {
+    if (current.some(t => !t.title.trim())) { err('לכל משימה צריכה להיות כותרת.'); return; }
+    err('');
+    $('sendBtn').disabled = true;
+    run()
+      .withSuccessHandler(n => {
+        $('sendBtn').disabled = false;
+        $('doneText').textContent = n === 1
+          ? 'המשימה נשלחה. היא תופיע ב-Outlook וב-To Do תוך דקה או שתיים.'
+          : n + ' משימות נשלחו. הן יופיעו ב-Outlook וב-To Do תוך דקה או שתיים.';
+        show('vDone');
+      })
+      .withFailureHandler(e => { $('sendBtn').disabled = false; err((e && e.message) || String(e)); })
+      .sendTasks(current);
+  };
+
+  function reset() { current = []; $('textIn').value = ''; home(); }
+  $('againBtn').onclick = home;
+  $('newBtn').onclick = () => { if (mode === 'chat') clearChat(); reset(); };
+
+  // ---------- מעבר בין מצבים ----------
+  function setMode(m) {
+    mode = m;
+    $('tabQuick').setAttribute('aria-selected', String(m === 'quick'));
+    $('tabChat').setAttribute('aria-selected', String(m === 'chat'));
+    if (m === 'chat' && !$('log').children.length) clearChat();
+    home();
+  }
+  $('tabQuick').onclick = () => setMode('quick');
+  $('tabChat').onclick = () => setMode('chat');
+
+  // ---------- שיחה ----------
+  const GREETING = 'היי, מה על הראש שלך? אפשר לכתוב או להקליט, גם בלי סדר. נסדר את זה יחד למשימות.';
+  let chatHist = [], chatTasks = [], chatRec = null, chatStream = null, chatChunks = [];
+
+  function addMsg(role, text) {
+    const d = document.createElement('div');
+    d.className = 'msg-' + role;
+    d.textContent = text;
+    $('log').appendChild(d);
+    d.scrollIntoView({ block: 'end', behavior: 'smooth' });
+    return d;
+  }
+  function clearChat() {
+    chatHist = []; chatTasks = [];
+    $('log').innerHTML = '';
+    addMsg('model', GREETING);
+    updateDraft(false);
+  }
+  function updateDraft(done) {
+    const n = chatTasks.length;
+    $('draft').hidden = !n;
+    $('draft').classList.toggle('done', !!done);
+    $('draftText').textContent = n === 1 ? 'משימה אחת ברשימה' : n + ' משימות ברשימה';
+  }
+  function setChatBusy(b) { $('chatSend').disabled = b; $('chatMic').disabled = b; }
+
+  function chatSend(text, b64, mime) {
+    err('');
+    setChatBusy(true);
+    const mine = addMsg('user', text || 'הודעה קולית…');
+    const typing = addMsg('model', 'חושב…');
+    typing.classList.add('typing');
+    run()
+      .withSuccessHandler(r => {
+        typing.remove();
+        const said = r.userText || text || '';
+        mine.textContent = said;
+        chatHist.push({ role: 'user', text: said }, { role: 'model', text: r.reply });
+        addMsg('model', r.reply);
+        chatTasks = r.tasks || [];
+        updateDraft(r.done);
+        setChatBusy(false);
+      })
+      .withFailureHandler(e => {
+        typing.remove(); mine.remove();
+        if (text) $('chatIn').value = text;
+        setChatBusy(false);
+        err((e && e.message) || String(e));
+      })
+      .chatTurn(chatHist.slice(-30), text || '', b64 || '', mime || '');
+  }
+
+  $('chatSend').onclick = () => {
+    const t = $('chatIn').value.trim();
+    if (!t) return;
+    $('chatIn').value = '';
+    chatSend(t);
+  };
+
+  $('chatMic').onclick = async () => {
+    if (chatRec && chatRec.state === 'recording') { chatRec.stop(); return; }
+    err('');
+    try {
+      chatStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch (e) {
+      $('chatMic').hidden = true;
+      err('אין גישה למיקרופון מהדף הזה. אפשר לכתוב את ההודעה בתיבה.');
+      return;
+    }
+    chatChunks = [];
+    chatRec = new MediaRecorder(chatStream);
+    chatRec.ondataavailable = e => { if (e.data && e.data.size) chatChunks.push(e.data); };
+    chatRec.onstop = async () => {
+      chatStream.getTracks().forEach(t => t.stop());
+      $('chatMic').textContent = 'הודעה קולית';
+      $('chatMic').classList.remove('rec');
+      $('chatMic').setAttribute('aria-pressed', 'false');
+      let a = new Blob(chatChunks, { type: chatRec.mimeType || 'audio/webm' });
+      try { a = await toWav(a); } catch (e) { /* שולחים את המקור */ }
+      const b64 = await blobToBase64(a);
+      chatSend('', b64, (a.type || 'audio/wav').split(';')[0]);
+    };
+    chatRec.start();
+    $('chatMic').textContent = 'סיום הקלטה';
+    $('chatMic').classList.add('rec');
+    $('chatMic').setAttribute('aria-pressed', 'true');
+  };
+
+  $('chatReset').onclick = clearChat;
+
+  $('draftBtn').onclick = () => {
+    current = chatTasks.map(t => Object.assign({}, t));
+    $('trBox').hidden = true;
+    renderTasks();
+    show('vReview');
+  };
+
+  // ---------- עזר: המרה ל-WAV מונו 16kHz (פורמט ש-Gemini מקבל בכל דפדפן) ----------
+  async function toWav(blob) {
+    const buf = await blob.arrayBuffer();
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    const ctx = new Ctx();
+    const decoded = await ctx.decodeAudioData(buf);
+    if (ctx.close) ctx.close();
+    const rate = 16000;
+    const len = Math.max(1, Math.ceil(decoded.duration * rate));
+    const off = new OfflineAudioContext(1, len, rate);
+    const src = off.createBufferSource();
+    src.buffer = decoded;
+    src.connect(off.destination);
+    src.start();
+    const data = (await off.startRendering()).getChannelData(0);
+
+    const view = new DataView(new ArrayBuffer(44 + data.length * 2));
+    const str = (o, s) => { for (let i = 0; i < s.length; i++) view.setUint8(o + i, s.charCodeAt(i)); };
+    str(0, 'RIFF'); view.setUint32(4, 36 + data.length * 2, true); str(8, 'WAVE');
+    str(12, 'fmt '); view.setUint32(16, 16, true); view.setUint16(20, 1, true); view.setUint16(22, 1, true);
+    view.setUint32(24, rate, true); view.setUint32(28, rate * 2, true); view.setUint16(32, 2, true); view.setUint16(34, 16, true);
+    str(36, 'data'); view.setUint32(40, data.length * 2, true);
+    for (let i = 0; i < data.length; i++) {
+      const s = Math.max(-1, Math.min(1, data[i]));
+      view.setInt16(44 + i * 2, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+    }
+    return new Blob([view], { type: 'audio/wav' });
+  }
+
+  function blobToBase64(blob) {
+    return new Promise((res, rej) => {
+      const r = new FileReader();
+      r.onload = () => res(String(r.result).split(',')[1]);
+      r.onerror = () => rej(new Error('קריאת הקובץ נכשלה'));
+      r.readAsDataURL(blob);
+    });
+  }
+  // ---------- חיבור לשרת (Apps Script) ----------
+  const CFG_KEY = 'voiceTasksCfg';
+  function getCfg() {
+    try { return JSON.parse(localStorage.getItem(CFG_KEY) || 'null'); } catch (e) { return null; }
+  }
+  function setCfg(c) {
+    try { localStorage.setItem(CFG_KEY, JSON.stringify(c)); } catch (e) { /* ממשיכים בלי שמירה */ }
+    memCfg = c;
+  }
+  let memCfg = getCfg();
+
+  async function callApi(action, args) {
+    const cfg = memCfg;
+    if (!cfg || !cfg.url) { show('vSetup'); throw new Error('צריך להשלים את הגדרות החיבור.'); }
+    let res;
+    try {
+      res = await fetch(cfg.url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: JSON.stringify({ token: cfg.token, action: action, args: args })
+      });
+    } catch (e) {
+      throw new Error('אין חיבור לשרת. בדקי את החיבור לאינטרנט ואת כתובת השרת בהגדרות.');
+    }
+    let data;
+    try { data = await res.json(); } catch (e) {
+      throw new Error('השרת החזיר תשובה לא צפויה. ודאי שכתובת השרת מסתיימת ב-/exec ושהגישה הוגדרה ל-Anyone.');
+    }
+    if (!data.ok) throw new Error(data.message || 'שגיאה בשרת.');
+    return data.result;
+  }
+
+  // מחקה את google.script.run: run().withSuccessHandler(f).withFailureHandler(g).action(...args)
+  function run() {
+    let ok = () => {}, bad = () => {};
+    const p = new Proxy({}, {
+      get(_, name) {
+        if (name === 'withSuccessHandler') return f => { ok = f; return p; };
+        if (name === 'withFailureHandler') return f => { bad = f; return p; };
+        return (...args) => { callApi(String(name), args).then(r => ok(r), e => bad(e)); };
+      }
+    });
+    return p;
+  }
+
+  $('cfgSave').onclick = async () => {
+    const url = $('cfgUrl').value.trim(), token = $('cfgToken').value.trim();
+    if (!/^https:\/\/script\.google\.com\/.+\/exec$/.test(url)) { err('כתובת השרת צריכה להתחיל ב-https://script.google.com ולהסתיים ב-/exec.'); return; }
+    if (!token) { err('הקלידי את קוד הגישה.'); return; }
+    err('');
+    $('cfgSave').disabled = true;
+    const prev = memCfg;
+    memCfg = { url: url, token: token };
+    try {
+      await callApi('ping', []);
+      setCfg(memCfg);
+      home();
+    } catch (e) {
+      memCfg = prev;
+      err(e.message);
+    } finally {
+      $('cfgSave').disabled = false;
+    }
+  };
+  $('openSetup').onclick = () => {
+    const c = memCfg || {};
+    $('cfgUrl').value = c.url || '';
+    $('cfgToken').value = c.token || '';
+    err('');
+    show('vSetup');
+  };
+
+  // ---------- הפעלה ----------
+  if (memCfg && memCfg.url) show('vRecord'); else show('vSetup');
+</script>
+</body>
+</html>
