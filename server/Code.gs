@@ -309,6 +309,8 @@ function readTable_(sh) {
 
 function appendRows_(sh, rows) {
   if (!rows.length) return;
+  const free = sh.getMaxRows() - sh.getLastRow();
+  if (free < rows.length) sh.insertRowsAfter(sh.getMaxRows(), rows.length - free + 100);
   const range = sh.getRange(sh.getLastRow() + 1, 1, rows.length, rows[0].length);
   range.setNumberFormat('@');
   range.setValues(rows);
@@ -452,6 +454,177 @@ function mutateTask_(id, action, change) {
     appendRows_(sheet_('outbox'), [[id, action, now, '']]);
     return t;
   });
+}
+
+/* ================= סנכרון ל-To Do (מייל מאוחד) ================= */
+
+const FLUSH_DELAY_MIN = 10;   // לא שולחים עדכון למשימה שנוצרה ממש עכשיו – Power Automate עוד לא יצר אותה ב-To Do
+const MAX_UPDATES_PER_MAIL = 100;
+const TODO_STATUS = { open: 'notStarted', done: 'completed', deleted: 'notStarted' };
+
+/**
+ * רץ מ-trigger כל 5 דקות: אוסף את כל העדכונים שממתינים ב-outbox ושולח מייל אחד.
+ * לכל משימה נשלח רק המצב העדכני שלה, גם אם היו כמה שינויים.
+ */
+function flushOutbox() {
+  const settings = getSettings_();
+  withLock_(function () {
+    const ob = sheet_('outbox');
+    const rows = ob.getDataRange().getDisplayValues();
+    const pending = {};   // taskId -> {rows: [מספרי שורות], actions: {}}
+    const order = [];
+    for (let i = 1; i < rows.length; i++) {
+      const id = rows[i][0];
+      if (!id || rows[i][3]) continue;
+      if (!pending[id]) { pending[id] = { rows: [], actions: {} }; order.push(id); }
+      pending[id].rows.push(i);
+      pending[id].actions[rows[i][1]] = true;
+    }
+    if (!order.length) return;
+
+    const byId = {};
+    readTable_(sheet_('tasks')).forEach(function (t) { byId[t.id] = t; });
+    const cutoff = new Date(Date.now() - FLUSH_DELAY_MIN * 60000).toISOString();
+    const now = new Date().toISOString();
+    const updates = [], done = [];
+
+    order.forEach(function (id) {
+      const t = byId[id];
+      if (!t) { done.push.apply(done, pending[id].rows); return; } // המשימה לא קיימת – אין מה לשלוח
+      if (t.createdAt > cutoff || updates.length >= MAX_UPDATES_PER_MAIL) return; // יישלח בסבב הבא
+      const action = t.status === 'deleted' ? 'delete'
+        : t.status === 'done' ? 'complete'
+        : pending[id].actions.reopen ? 'reopen' : 'update';
+      const c = clean_(t);
+      updates.push({
+        id: id, action: action, title: c.title,
+        notes: notesWithMeta_(c.notes, t.area, id),
+        dueDate: c.dueDate, importance: c.importance,
+        status: TODO_STATUS[t.status] || 'notStarted'
+      });
+      done.push.apply(done, pending[id].rows);
+    });
+
+    if (updates.length) {
+      MailApp.sendEmail({
+        to: settings.to,
+        subject: '[עדכון-משימה] ' + updates.length,
+        body: JSON.stringify({ updates: updates }, null, 1) // שורה לכל שדה – בלי שורות ארוכות מדי במייל
+      });
+    }
+    if (done.length) {
+      const col = rows.map(function (r) { return [r[3]]; });
+      done.forEach(function (i) { col[i][0] = now; });
+      col.shift();
+      ob.getRange(2, 4, col.length, 1).setNumberFormat('@').setValues(col);
+    }
+  });
+}
+
+/* ================= עריכה ישירה בגיליון ================= */
+
+const TRACKED_FIELDS = ['title', 'notes', 'area', 'dueDate', 'importance', 'status'];
+const STATUS_ACTION = { done: 'complete', open: 'reopen', deleted: 'delete' };
+
+/**
+ * trigger מסוג onEdit (מותקן ע"י setupSync). רץ כשעורכים ידנית את הגיליון tasks, גם מאפליקציית Sheets.
+ * כתיבה של הסקריפט עצמו לא מפעילה אותו.
+ */
+function onSheetEdit(e) {
+  if (!e || !e.range) return;
+  const sh = e.range.getSheet();
+  if (sh.getName() !== 'tasks') return;
+  const head = SHEETS.tasks;
+  const r0 = Math.max(2, e.range.getRow()), r1 = e.range.getLastRow();
+  if (r1 < r0) return;
+  const edited = head.slice(e.range.getColumn() - 1, e.range.getLastColumn());
+  if (!edited.some(function (c) { return TRACKED_FIELDS.indexOf(c) >= 0; })) return;
+  const statusEdited = edited.indexOf('status') >= 0;
+  const settings = getSettings_();
+
+  withLock_(function () {
+    const range = sh.getRange(r0, 1, r1 - r0 + 1, head.length);
+    const values = range.getDisplayValues();
+    const now = new Date().toISOString();
+    const queue = [];
+
+    const out = values.map(function (row) {
+      const t = {};
+      head.forEach(function (k, i) { t[k] = row[i]; });
+      if (!String(t.title).trim()) return row; // שורה ריקה, או שהכותרת נמחקה – לא נוגעים
+
+      if (!t.id) {
+        // שורה חדשה שהוקלדה בגיליון → משימה חדשה ב-To Do
+        const c = clean_(t);
+        const id = newId_();
+        try {
+          MailApp.sendEmail({
+            to: settings.to,
+            subject: '[משימה] ' + c.title,
+            body: JSON.stringify({ title: c.title, notes: notesWithMeta_(c.notes, t.area, id), dueDate: c.dueDate, importance: c.importance })
+          });
+        } catch (err) {
+          console.error('מייל יצירה לשורה חדשה נכשל: ' + err.message);
+          return row; // נשאר בלי מזהה; ייווצר בעריכה הבאה של השורה
+        }
+        Object.assign(t, c);
+        t.id = id; t.createdAt = now; t.updatedAt = now; t.source = 'manual';
+        t.status = t.status === 'done' ? 'done' : 'open';
+        t.completedAt = t.status === 'done' ? now : '';
+        if (t.status === 'done') queue.push([id, 'complete', now, '']);
+      } else {
+        if (t.status === 'deleted' && !statusEdited) return row; // עריכה של משימה שכבר נמחקה – לא מסונכרנת
+        t.updatedAt = now;
+        let action = 'update';
+        if (statusEdited) {
+          action = STATUS_ACTION[t.status] || 'update';
+          if (t.status === 'done' && !t.completedAt) t.completedAt = now;
+          if (t.status === 'open') t.completedAt = '';
+        }
+        queue.push([t.id, action, now, '']);
+      }
+      return head.map(function (k) { return t[k] || ''; });
+    });
+
+    range.setNumberFormat('@');
+    range.setValues(out);
+    appendRows_(sheet_('outbox'), queue);
+  });
+}
+
+/**
+ * להרצה ידנית פעם אחת מהעורך, אחרי שהזרימה החדשה ב-Power Automate מוכנה:
+ * מתקינה את ה-triggers ומוסיפה לגיליון רשימות נפתחות והגנות.
+ */
+function setupSync() {
+  const ss = withLock_(db_);
+  ScriptApp.getProjectTriggers().forEach(function (tr) {
+    if (['flushOutbox', 'onSheetEdit'].indexOf(tr.getHandlerFunction()) >= 0) ScriptApp.deleteTrigger(tr);
+  });
+  ScriptApp.newTrigger('flushOutbox').timeBased().everyMinutes(5).create();
+  ScriptApp.newTrigger('onSheetEdit').forSpreadsheet(ss).onEdit().create();
+
+  const sh = sheet_('tasks');
+  const col = function (name) { return SHEETS.tasks.indexOf(name) + 1; };
+  const rows = sh.getMaxRows() - 1;
+  const list = function (values) {
+    return SpreadsheetApp.newDataValidation().requireValueInList(values, true).setAllowInvalid(false).build();
+  };
+  sh.getRange(2, col('status'), rows, 1).setDataValidation(list(['open', 'done', 'deleted']));
+  sh.getRange(2, col('importance'), rows, 1).setDataValidation(list(['normal', 'high']));
+  sh.getRange(2, col('area'), rows, 1).setDataValidation(
+    SpreadsheetApp.newDataValidation().requireValueInRange(sheet_('areas').getRange('A2:A200'), true)
+      .setAllowInvalid(true).setHelpText('בחרי תחום מהרשימה, או השאירי ריק.').build());
+  sh.getRange(2, col('dueDate'), rows, 1).setDataValidation(
+    SpreadsheetApp.newDataValidation().requireFormulaSatisfied('=OR(E2="",REGEXMATCH(E2,"^\\d{4}-\\d{2}-\\d{2}$"))')
+      .setAllowInvalid(false).setHelpText('תאריך בפורמט 2026-10-20, או ריק.').build());
+
+  sh.getProtections(SpreadsheetApp.ProtectionType.RANGE).forEach(function (p) { p.remove(); });
+  ['id', 'createdAt', 'updatedAt', 'completedAt', 'source'].forEach(function (name) {
+    sh.getRange(1, col(name), sh.getMaxRows(), 1).protect()
+      .setDescription('מתמלא אוטומטית – לא לערוך').setWarningOnly(true);
+  });
+  Logger.log('הסנכרון הופעל. עדכונים יישלחו ל-To Do כל 5 דקות.');
 }
 
 /** ישן: שולח מייל אחד לכל משימה, בלי שמירה. נשאר זמין עד שכל הדפים יעברו ל-createTasks */
