@@ -39,6 +39,7 @@ function doPost(e) {
     const actions = {
       processAudio: processAudio, processText: processText, chatTurn: chatTurn,
       createTasks: createTasks, listTasks: listTasks, listAreas: listAreas, saveAreas: saveAreas,
+      updateTask: updateTask, completeTask: completeTask, reopenTask: reopenTask, deleteTask: deleteTask,
       sendTasks: sendTasks, // ישן – נשאר זמין לדפים שעוד לא התעדכנו
       ping: function () { return 'ok'; }
     };
@@ -239,7 +240,9 @@ function clean_(t) {
 const SHEETS = {
   tasks: ['id', 'title', 'notes', 'area', 'dueDate', 'importance', 'status', 'createdAt', 'updatedAt', 'completedAt', 'source'],
   areas: ['name', 'color', 'order'],
-  whatsapp: ['id', 'name', 'phone', 'message', 'sendAt', 'status', 'calendarEventId', 'createdAt']
+  whatsapp: ['id', 'name', 'phone', 'message', 'sendAt', 'status', 'calendarEventId', 'createdAt'],
+  // עדכונים שממתינים למייל המאוחד ל-To Do (שלב 4). התוכן נלקח מהמצב העדכני של המשימה בזמן השליחה
+  outbox: ['taskId', 'action', 'at', 'sentAt']
 };
 const DEFAULT_AREAS = [
   { name: 'החלפת רכזת מרחב חדרה–אור עקיבא', color: '#2E6B5E' },
@@ -270,22 +273,28 @@ function db_() {
 
   const ss = SpreadsheetApp.create('משימות בקול – נתונים');
   Object.keys(SHEETS).forEach(function (name, i) {
-    const sh = i === 0 ? ss.getSheets()[0].setName(name) : ss.insertSheet(name);
-    const head = SHEETS[name];
-    sh.getRange(1, 1, sh.getMaxRows(), head.length).setNumberFormat('@'); // הכול טקסט, בלי המרת תאריכים
-    sh.getRange(1, 1, 1, head.length).setValues([head]).setFontWeight('bold');
-    sh.setFrozenRows(1);
-    sh.setRightToLeft(true);
+    initSheet_(i === 0 ? ss.getSheets()[0].setName(name) : ss.insertSheet(name), SHEETS[name]);
   });
   appendRows_(ss.getSheetByName('areas'), DEFAULT_AREAS.map(function (a, i) { return [a.name, a.color, String(i + 1)]; }));
   props.setProperty('SHEET_ID', ss.getId());
   return ss;
 }
 
-function sheet_(name) {
-  const sh = db_().getSheetByName(name);
-  if (!sh) throw new Error('בקובץ הנתונים חסר הגיליון "' + name + '".');
+function initSheet_(sh, head) {
+  sh.getRange(1, 1, sh.getMaxRows(), head.length).setNumberFormat('@'); // הכול טקסט, בלי המרת תאריכים
+  sh.getRange(1, 1, 1, head.length).setValues([head]).setFontWeight('bold');
+  sh.setFrozenRows(1);
+  sh.setRightToLeft(true);
   return sh;
+}
+
+/** גיליון לפי שם. גיליון שנוסף בגרסה מאוחרת יותר נוצר כאן אוטומטית */
+function sheet_(name) {
+  const ss = db_();
+  const sh = ss.getSheetByName(name);
+  if (sh) return sh;
+  if (!SHEETS[name]) throw new Error('בקובץ הנתונים חסר הגיליון "' + name + '".');
+  return initSheet_(ss.insertSheet(name), SHEETS[name]);
 }
 
 function readTable_(sh) {
@@ -388,6 +397,61 @@ function createTasks(tasks, source) {
 
   if (rows.length) withLock_(function () { appendRows_(sheet_('tasks'), rows); });
   return { created: created, failed: failed, error: error };
+}
+
+/* ================= שינוי משימות קיימות ================= */
+
+/** שדות שמותר לערוך מהאפליקציה */
+function updateTask(id, patch) {
+  return mutateTask_(id, 'update', function (t) {
+    const p = patch || {};
+    const c = clean_({
+      title: 'title' in p ? p.title : t.title,
+      notes: 'notes' in p ? p.notes : t.notes,
+      dueDate: 'dueDate' in p ? p.dueDate : t.dueDate,
+      importance: 'importance' in p ? p.importance : t.importance
+    });
+    if (!c.title) throw apiErr_('INPUT', 'לכל משימה צריכה להיות כותרת.');
+    t.title = c.title; t.notes = c.notes; t.dueDate = c.dueDate; t.importance = c.importance;
+    if ('area' in p) t.area = String(p.area || '').trim().slice(0, 60);
+  });
+}
+
+function completeTask(id) {
+  return mutateTask_(id, 'complete', function (t, now) { t.status = 'done'; t.completedAt = now; });
+}
+
+function reopenTask(id) {
+  return mutateTask_(id, 'reopen', function (t) { t.status = 'open'; t.completedAt = ''; });
+}
+
+function deleteTask(id) {
+  return mutateTask_(id, 'delete', function (t) { t.status = 'deleted'; });
+}
+
+/** מוצאת משימה לפי מזהה, משנה אותה, ומוסיפה רשומה לתור העדכונים ל-To Do */
+function mutateTask_(id, action, change) {
+  return withLock_(function () {
+    const sh = sheet_('tasks');
+    const head = SHEETS.tasks;
+    const ids = sh.getRange(1, 1, sh.getLastRow(), 1).getDisplayValues();
+    let rowNum = 0;
+    for (let i = 1; i < ids.length; i++) if (ids[i][0] === id) { rowNum = i + 1; break; }
+    if (!rowNum) throw apiErr_('NOT_FOUND', 'המשימה לא נמצאה בגיליון. רענני את הרשימה.');
+
+    const range = sh.getRange(rowNum, 1, 1, head.length);
+    const t = {};
+    range.getDisplayValues()[0].forEach(function (v, i) { t[head[i]] = v; });
+    if (t.status === 'deleted') throw apiErr_('NOT_FOUND', 'המשימה כבר נמחקה. רענני את הרשימה.');
+
+    const now = new Date().toISOString();
+    change(t, now);
+    t.updatedAt = now;
+    range.setNumberFormat('@');
+    range.setValues([head.map(function (k) { return t[k] || ''; })]);
+    appendRows_(sheet_('outbox'), [[id, action, now, '']]);
+    return t;
+  });
 }
 
 /** ישן: שולח מייל אחד לכל משימה, בלי שמירה. נשאר זמין עד שכל הדפים יעברו ל-createTasks */
