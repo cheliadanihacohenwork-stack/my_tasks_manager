@@ -9,6 +9,7 @@
  */
 
 const MODEL = 'gemini-flash-latest'; // אפשר להחליף לדגם ספציפי אם תרצי
+const FALLBACK_MODELS = ['gemini-flash-lite-latest']; // כשהדגם הראשי עמוס (503)
 const TZ = 'Asia/Jerusalem';
 const DAYS = ['ראשון', 'שני', 'שלישי', 'רביעי', 'חמישי', 'שישי', 'שבת'];
 
@@ -179,22 +180,35 @@ function chatTurn(history, text, audioB64, mimeType) {
 
 /* ================= משותף ================= */
 
+/** קוראת ל-Gemini. בעומס (429/5xx) מנסה שוב, ואז עוברת לדגם הגיבוי */
 function geminiJson_(request) {
   const settings = getSettings_();
-  const url = 'https://generativelanguage.googleapis.com/v1beta/models/' + MODEL + ':generateContent';
-  const res = UrlFetchApp.fetch(url, {
-    method: 'post',
-    contentType: 'application/json',
-    headers: { 'x-goog-api-key': settings.key },
-    payload: JSON.stringify(request),
-    muteHttpExceptions: true
-  });
+  const payload = JSON.stringify(request);
+  const models = [MODEL].concat(FALLBACK_MODELS);
+  let body = '';
+  let ok = false;
 
-  const code = res.getResponseCode();
-  const body = res.getContentText();
-  if (code !== 200) {
-    throw new Error('Gemini החזיר שגיאה (' + code + '): ' + body.slice(0, 300));
+  for (let m = 0; m < models.length && !ok; m++) {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const res = UrlFetchApp.fetch(
+        'https://generativelanguage.googleapis.com/v1beta/models/' + models[m] + ':generateContent', {
+          method: 'post',
+          contentType: 'application/json',
+          headers: { 'x-goog-api-key': settings.key },
+          payload: payload,
+          muteHttpExceptions: true
+        });
+      const code = res.getResponseCode();
+      body = res.getContentText();
+      if (code === 200) { ok = true; break; }
+      if (code === 404 && m > 0) break; // דגם הגיבוי לא קיים – מדלגים
+      if (code !== 429 && code < 500) {
+        throw new Error('Gemini החזיר שגיאה (' + code + '): ' + body.slice(0, 300));
+      }
+      if (attempt === 0) Utilities.sleep(2000);
+    }
   }
+  if (!ok) throw new Error('Gemini עמוס כרגע. נסי שוב בעוד דקה או שתיים.');
 
   const data = JSON.parse(body);
   const cand = data.candidates && data.candidates[0];
