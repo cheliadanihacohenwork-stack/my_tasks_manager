@@ -38,6 +38,7 @@ function doPost(e) {
     if (req.token !== token) throw apiErr_('TOKEN', 'קוד הגישה שגוי.');
     const actions = {
       processAudio: processAudio, processText: processText, chatTurn: chatTurn,
+      bootstrap: bootstrap,
       createTasks: createTasks, listTasks: listTasks, listAreas: listAreas, saveAreas: saveAreas,
       updateTask: updateTask, completeTask: completeTask, reopenTask: reopenTask, deleteTask: deleteTask,
       sendTasks: sendTasks, // ישן – נשאר זמין לדפים שעוד לא התעדכנו
@@ -328,18 +329,21 @@ function notesWithMeta_(notes, area, id) {
   return (notes ? notes + '\n\n' : '') + lines.join('\n');
 }
 
+// קריאות לא נועלות: הן רק קוראות, ונעילה הייתה מעכבת אותן בזמן שה-trigger רץ
+
 function listTasks() {
-  return withLock_(function () {
-    return readTable_(sheet_('tasks')).filter(function (t) { return t.status !== 'deleted'; });
-  });
+  return readTable_(sheet_('tasks')).filter(function (t) { return t.status !== 'deleted'; });
 }
 
 function listAreas() {
-  return withLock_(function () {
-    return readTable_(sheet_('areas'))
-      .map(function (a) { return { name: a.name, color: a.color, order: Number(a.order) || 0 }; })
-      .sort(function (a, b) { return a.order - b.order; });
-  });
+  return readTable_(sheet_('areas'))
+    .map(function (a) { return { name: a.name, color: a.color, order: Number(a.order) || 0 }; })
+    .sort(function (a, b) { return a.order - b.order; });
+}
+
+/** כל מה שהדף צריך בפתיחה, בבקשה אחת */
+function bootstrap() {
+  return { areas: listAreas(), tasks: listTasks() };
 }
 
 /** מחליפה את כל רשימת התחומים. areas = [{name, color}] לפי הסדר */
@@ -458,12 +462,14 @@ function mutateTask_(id, action, change) {
 
 /* ================= סנכרון ל-To Do (מייל מאוחד) ================= */
 
-const FLUSH_DELAY_MIN = 10;   // לא שולחים עדכון למשימה שנוצרה ממש עכשיו – Power Automate עוד לא יצר אותה ב-To Do
+const FLUSH_DELAY_MIN = 5;    // לא שולחים עדכון למשימה שנוצרה ממש עכשיו – Power Automate עוד לא יצר אותה ב-To Do
+const QUIET_SEC = 60;         // שולחים אחרי דקה בלי שינויים חדשים, כדי שסדרת לחיצות תצא במייל אחד
+const MAX_WAIT_MIN = 4;       // אבל לא מחכים יותר מזה מהשינוי הראשון
 const MAX_UPDATES_PER_MAIL = 100;
 const TODO_STATUS = { open: 'notStarted', done: 'completed', deleted: 'notStarted' };
 
 /**
- * רץ מ-trigger כל 5 דקות: אוסף את כל העדכונים שממתינים ב-outbox ושולח מייל אחד.
+ * רץ מ-trigger כל דקה: אוסף את כל העדכונים שממתינים ב-outbox ושולח מייל אחד.
  * לכל משימה נשלח רק המצב העדכני שלה, גם אם היו כמה שינויים.
  */
 function flushOutbox() {
@@ -473,14 +479,21 @@ function flushOutbox() {
     const rows = ob.getDataRange().getDisplayValues();
     const pending = {};   // taskId -> {rows: [מספרי שורות], actions: {}}
     const order = [];
+    let first = Infinity, last = 0;
     for (let i = 1; i < rows.length; i++) {
       const id = rows[i][0];
       if (!id || rows[i][3]) continue;
       if (!pending[id]) { pending[id] = { rows: [], actions: {} }; order.push(id); }
       pending[id].rows.push(i);
       pending[id].actions[rows[i][1]] = true;
+      const at = new Date(rows[i][2]).getTime() || 0; // זמן לא תקין נחשב ישן
+      first = Math.min(first, at);
+      last = Math.max(last, at);
     }
     if (!order.length) return;
+    const quiet = Date.now() - last >= QUIET_SEC * 1000;
+    const tooLong = Date.now() - first >= MAX_WAIT_MIN * 60000;
+    if (!quiet && !tooLong) return; // עדיין לוחצים – מחכים לסבב הבא
 
     const byId = {};
     readTable_(sheet_('tasks')).forEach(function (t) { byId[t.id] = t; });
@@ -601,7 +614,7 @@ function setupSync() {
   ScriptApp.getProjectTriggers().forEach(function (tr) {
     if (['flushOutbox', 'onSheetEdit'].indexOf(tr.getHandlerFunction()) >= 0) ScriptApp.deleteTrigger(tr);
   });
-  ScriptApp.newTrigger('flushOutbox').timeBased().everyMinutes(5).create();
+  ScriptApp.newTrigger('flushOutbox').timeBased().everyMinutes(1).create();
   ScriptApp.newTrigger('onSheetEdit').forSpreadsheet(ss).onEdit().create();
 
   const sh = sheet_('tasks');
@@ -624,7 +637,7 @@ function setupSync() {
     sh.getRange(1, col(name), sh.getMaxRows(), 1).protect()
       .setDescription('מתמלא אוטומטית – לא לערוך').setWarningOnly(true);
   });
-  Logger.log('הסנכרון הופעל. עדכונים יישלחו ל-To Do כל 5 דקות.');
+  Logger.log('הסנכרון הופעל. עדכונים יישלחו ל-To Do תוך דקה עד ארבע דקות.');
 }
 
 /** ישן: שולח מייל אחד לכל משימה, בלי שמירה. נשאר זמין עד שכל הדפים יעברו ל-createTasks */

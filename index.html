@@ -503,7 +503,7 @@
       .withSuccessHandler(r => {
         $('sendBtn').disabled = false;
         const n = r.created.length;
-        if (tasks) tasks.push(...r.created);
+        if (tasks) { tasks.push(...r.created); saveTasksCache(); }
         if (r.failed.length) {
           current = r.failed;
           renderTasks();
@@ -726,7 +726,7 @@
       await callApi('ping', []);
       setCfg(memCfg);
       home();
-      loadAreas();
+      loadTasks(true);
     } catch (e) {
       memCfg = prev;
       err(e.message);
@@ -744,8 +744,15 @@
 
   // ---------- מסך משימות ----------
   const VIEW_KEY = 'voiceTasksView';
-  let tasks = null;            // מטמון בזיכרון: נטען פעם אחת, ומתעדכן מקומית בכל פעולה
+  const TASKS_KEY = 'voiceTasksCache';
+  // מטמון: מוצג מיד מהמכשיר, מתרענן מהשרת ברקע, ומתעדכן מקומית בכל פעולה
+  let tasks = null;
+  try { tasks = JSON.parse(localStorage.getItem(TASKS_KEY) || 'null'); } catch (e) { tasks = null; }
   let tasksLoading = false;
+  let pendingOps = 0;          // פעולות שעוד לא חזרו מהשרת – בזמנן לא דורסים את הרשימה ברענון
+  function saveTasksCache() {
+    try { localStorage.setItem(TASKS_KEY, JSON.stringify(tasks)); } catch (e) { /* רק בזיכרון */ }
+  }
   let taskView = 'areas';
   try { taskView = localStorage.getItem(VIEW_KEY) || 'areas'; } catch (e) { /* ברירת מחדל */ }
   const collapsed = {};
@@ -769,16 +776,29 @@
       String(a.createdAt).localeCompare(String(b.createdAt));
   }
 
-  function loadTasks(force) {
-    if (tasksLoading) return;
-    if (tasks && !force) { renderTaskList(); return; }
+  // מציגים מיד את מה שיש, ומרעננים מהשרת ברקע (גם התחומים, באותה בקשה)
+  function loadTasks(quiet) {
+    if (tasks) renderTaskList(); else $('taskList').innerHTML = '<p class="empty">טוען משימות…</p>';
+    if (tasksLoading || !memCfg || !memCfg.url) return;
     tasksLoading = true;
-    if (!tasks) $('taskList').innerHTML = '<p class="empty">טוען משימות…</p>';
-    callApi('listTasks', [])
-      .then(list => { tasks = list; renderTaskList(); },
-        e => { if (!tasks) $('taskList').innerHTML = ''; err(e.message); })
+    callApi('bootstrap', [])
+      .then(r => {
+        setAreas(r.areas);
+        if (pendingOps) return; // פעולה באמצע – הרענון הבא יביא את המצב המלא
+        tasks = r.tasks;
+        saveTasksCache();
+        if (!$('vTasks').hidden) renderTaskList();
+        if (!$('vReview').hidden) renderTasks();
+      }, e => {
+        if (!tasks) $('taskList').innerHTML = '';
+        if (!quiet || !$('vTasks').hidden) err(e.message);
+      })
       .finally(() => { tasksLoading = false; });
   }
+  // חוזרים לאפליקציה (למשל אחרי עריכה בגיליון) – מרעננים ברקע
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && memCfg && memCfg.url) loadTasks(true);
+  });
 
   function visibleTasks() {
     const q = $('taskSearch').value.trim().toLowerCase();
@@ -897,6 +917,8 @@
     const prev = Object.assign({}, t);
     Object.assign(t, changes);
     renderTaskList();
+    saveTasksCache();
+    pendingOps++;
     const seq = opSeq[t.id] = (opSeq[t.id] || 0) + 1;
     opChain[t.id] = (opChain[t.id] || Promise.resolve())
       .then(() => callApi(action, [t.id].concat(extraArgs || [])))
@@ -905,7 +927,8 @@
           if (opSeq[t.id] === seq) { Object.assign(t, prev); renderTaskList(); }
           hideToast();
           err(e.message + ' השינוי לא נשמר.');
-        });
+        })
+      .finally(() => { pendingOps--; saveTasksCache(); });
   }
 
   function toggleDone(t) {
@@ -969,7 +992,7 @@
   // ---------- ניווט ----------
   $('navAdd').onclick = () => { hideToast(); home(); };
   $('navTasks').onclick = () => { err(''); show('vTasks'); loadTasks(false); };
-  $('taskReload').onclick = () => { err(''); loadTasks(true); };
+  $('taskReload').onclick = () => { err(''); loadTasks(false); };
   $('taskSearch').oninput = renderTaskList;
   $('urgentOnly').onclick = e => {
     const on = e.currentTarget.getAttribute('aria-pressed') !== 'true';
@@ -1059,7 +1082,8 @@
   };
 
   // ---------- הפעלה ----------
-  if (memCfg && memCfg.url) { show('vRecord'); loadAreas(); } else show('vSetup');
+  // טוענים ברקע כבר בפתיחה, כדי שמסך המשימות יהיה מוכן כשעוברים אליו
+  if (memCfg && memCfg.url) { show('vRecord'); loadTasks(true); } else show('vSetup');
 </script>
 </body>
 </html>
